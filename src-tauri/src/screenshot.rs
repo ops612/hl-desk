@@ -308,8 +308,12 @@ async fn screenshot_read(app: AppHandle, id: i64) -> Res<Response> {
     Ok(Response::new(bytes))
 }
 
+/// Opens a capture in the editor and hides the popover (it stays on top otherwise).
 #[tauri::command]
 async fn screenshot_open(app: AppHandle, id: i64) -> Res<()> {
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.hide();
+    }
     open_editor(&app, id)
 }
 
