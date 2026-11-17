@@ -511,15 +511,21 @@ mod overlay {
             .ok_or_else(|| "The capture was cancelled.".to_string())
     }
 
+    /// The session an overlay window belongs to (its label is "overlay-<session>-<monitor>"), so
+    /// a late call from an old overlay page never ends a newer capture.
+    pub fn session_of(label: &str) -> Option<u64> {
+        label.strip_prefix("overlay-")?.split('-').next()?.parse().ok()
+    }
+
     /// Ends the overlay: `reason` None when the user cancelled, Some when the page failed.
-    pub fn cancel(reason: Option<String>) {
-        if let Some(session) = end(None) {
+    pub fn cancel(session: Option<u64>, reason: Option<String>) {
+        if let Some(session) = end(session) {
             let _ = session.done.send(Err(reason));
         }
     }
 
-    pub fn finish(monitor: usize, x: u32, y: u32, width: u32, height: u32) {
-        if let Some(session) = end(None) {
+    pub fn finish(session: Option<u64>, monitor: usize, x: u32, y: u32, width: u32, height: u32) {
+        if let Some(session) = end(session) {
             let _ = session.done.send(Ok(Pick { monitor, x, y, width, height }));
         }
     }
@@ -642,20 +648,27 @@ fn screenshot_overlay_show(window: WebviewWindow) {
 
 /// Overlay page: Esc or right-click (no reason), or the page failed (reason, shown to the user).
 #[tauri::command]
-fn screenshot_overlay_cancel(reason: Option<String>) {
+fn screenshot_overlay_cancel(window: WebviewWindow, reason: Option<String>) {
     if let Some(reason) = &reason {
-        applog::error(&format!("capture: overlay page failed: {reason}"));
+        applog::error(&format!("capture: overlay page failed ({}): {reason}", window.label()));
     }
-    overlay::cancel(reason);
+    overlay::cancel(overlay::session_of(window.label()), reason);
 }
 
 /// Overlay page: the dragged rectangle, in physical pixels of monitor `index`'s image.
 #[tauri::command]
-fn screenshot_overlay_done(index: usize, x: u32, y: u32, width: u32, height: u32) {
+fn screenshot_overlay_done(
+    window: WebviewWindow,
+    index: usize,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+) {
     applog::info(&format!(
         "capture: area picked on monitor {index}: {width}x{height} at ({x}, {y})"
     ));
-    overlay::finish(index, x, y, width, height);
+    overlay::finish(overlay::session_of(window.label()), index, x, y, width, height);
 }
 
 /// Recent captures, newest first (expired ones are deleted first).
