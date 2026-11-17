@@ -115,9 +115,17 @@ fn watch(app: AppHandle) {
         }
         // Only Windows' own snipping tool counts as a device screenshot; an image copied from a
         // browser or Office is not offered. The bitmap is read only once this passes.
+        // SAFETY: as above, only reads the clipboard's format list.
+        let image_only = ![CF_UNICODETEXT, html_format]
+            .iter()
+            .any(|&f| f != 0 && unsafe { IsClipboardFormatAvailable(f) } != 0);
         match clipboard_owner_exe() {
             Some(exe) => {
-                let snip = SNIP_TOOLS.iter().any(|t| exe.eq_ignore_ascii_case(t));
+                // Windows 10's Snip & Sketch (Win+Shift+S) hands the image to the clipboard
+                // service, so the owner shows as svchost.exe: count that only for an image-only
+                // copy (seen on a real Windows 10 PC, 2026-11-17).
+                let snip = SNIP_TOOLS.iter().any(|t| exe.eq_ignore_ascii_case(t))
+                    || (exe.eq_ignore_ascii_case("svchost.exe") && image_only);
                 applog::info(&format!(
                     "device shot: clipboard image from {exe}, {}",
                     if snip { "qualifies" } else { "skipped (not the snipping tool)" }
@@ -128,10 +136,7 @@ fn watch(app: AppHandle) {
             }
             None => {
                 // Owner unknown: an image that came with text or HTML is a copy from an app.
-                // SAFETY: as above, only reads the clipboard's format list.
-                let with_text = [CF_UNICODETEXT, html_format]
-                    .iter()
-                    .any(|&f| f != 0 && unsafe { IsClipboardFormatAvailable(f) } != 0);
+                let with_text = !image_only;
                 applog::info(&format!(
                     "device shot: clipboard owner unknown, {}",
                     if with_text { "skipped (image came with text or HTML)" } else { "qualifies (image only)" }
