@@ -1,6 +1,7 @@
 // Corner toast (toast.html?kind=...), opened by src-tauri/src/screenshot/toast.rs. It never
 // takes the keyboard. The window starts hidden on Windows: once the page is set up it calls
-// screenshot_toast_show, and Rust shows it without taking the focus. Kinds:
+// screenshot_toast_show with its content height, and Rust sizes the window to it and shows it
+// without taking the focus. Kinds:
 // - cancelled: "Capture cancelled" for about 2 s.
 // - shot: a device screenshot (Win+Shift+S, Cmd+Shift+4) with "Mark up in HL Desk", about 8 s;
 //   the timer pauses while the pointer is over it.
@@ -71,5 +72,14 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") close();
 });
 
-// Set up: now Rust may show the window (it closes a toast that never reports, so none stays blank).
-invoke("screenshot_toast_show").catch((e) => log("error", `show: ${describe(e)}`));
+// Set up: now Rust may size the window to the content and show it (it closes a toast that never
+// reports, so none stays blank). Height in CSS pixels: the content's plus the body's top and bottom
+// border, measured once the fonts are in (they set the line height).
+async function show(): Promise<void> {
+  await document.fonts.ready.catch(() => {});
+  const content = document.getElementById(kind === "shot" ? "shot" : "notice")!;
+  const border = document.body.offsetHeight - document.body.clientHeight;
+  const height = Math.ceil(content.getBoundingClientRect().height + border);
+  await invoke("screenshot_toast_show", { height });
+}
+show().catch((e) => log("error", `show: ${describe(e)}`));

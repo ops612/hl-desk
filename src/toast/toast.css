@@ -1,16 +1,20 @@
-/* Corner toast. Tokens, font and shared classes (.btn-primary, .icon-btn) come from src/styles.css. */
-body.toast {
-  border: 1px solid var(--border); justify-content: center;
+/* Corner toast. Tokens, font and shared classes (.btn-primary, .icon-btn) come from src/styles.css.
+   The content sets the height: main.ts measures it and Rust sizes the window to it. So the content
+   sits at the top and never shrinks; nothing is centred or anchored to the bottom.
+   The body class is "toast-page", not "toast": .toast in styles.css is the popover's dark message
+   (Clipboard; absolute, 52px above the bottom), which floated the whole page up out of the window. */
+body.toast-page {
+  border: 1px solid var(--border); justify-content: flex-start;
   user-select: none; -webkit-user-select: none; cursor: default;
 }
 .toast-notice {
-  display: flex; align-items: center; justify-content: center; gap: 8px; margin: 0;
-  font-size: 13px; font-weight: 500;
+  display: flex; flex: none; align-items: center; justify-content: center; gap: 8px; margin: 0;
+  padding: 14px var(--inset); font-size: 13px; line-height: 18px; font-weight: 500;
 }
 .toast-notice::before {
   content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--muted);
 }
-.toast-shot { display: flex; align-items: center; gap: 12px; padding: 0 8px 0 var(--inset); }
+.toast-shot { display: flex; flex: none; align-items: center; gap: 12px; padding: 14px 8px 14px var(--inset); }
 .toast-thumb {
   flex: none; width: 88px; height: 66px; padding: 0; overflow: hidden; cursor: pointer;
   border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg);

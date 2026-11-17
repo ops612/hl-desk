@@ -1032,10 +1032,11 @@ async fn screenshot_toast_markup(app: AppHandle, window: WebviewWindow) -> Res<(
     })
 }
 
-/// Toast page: it has drawn, so show the window (on top, without taking the focus).
+/// Toast page: it has drawn and its content is `height` CSS pixels tall, so size the window to
+/// it and show it (on top, without taking the focus).
 #[tauri::command]
-fn screenshot_toast_show(window: WebviewWindow) {
-    toast::ready(&window);
+fn screenshot_toast_show(window: WebviewWindow, height: f64) {
+    toast::ready(&window, height);
 }
 
 /// Toast page: closed (its x, or its timer ran out).
