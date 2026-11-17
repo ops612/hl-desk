@@ -35,9 +35,9 @@ Approach: build once, use forever. Few dependencies, no server, no account, noth
 | # | Step | Rough time | Check |
 |---|------|-----------|-------|
 | 1 | [x] New private repo, Tauri skeleton, menu bar icon, signed Mac + Windows installers built by GitHub Actions (done 2026-11-17, b829a36; Windows job runs by hand only) | 1-2 days | Mac .dmg installs with no warning; Windows installer opens an empty window |
-| 2 | Clipboard: watch copies, store, search, pin, auto-delete timer, setting for the time, skip concealed copies | 3-4 days | Copy 10 items, set 1 minute, all unpinned items gone after 1 minute |
-| 3 | Screenshot: capture area by shortcut, editor with number, pen, crop, undo, copy, save, drag-out | 5-7 days | Mark a capture with 1-2-3, crop it, drag it into WhatsApp |
-| 4 | Notes: list, editor, autosave, search | 1-2 days | Note survives quitting and reopening the app |
+| 2 | [x] (built 2026-11-17, integrate branch; not yet tried on a Mac) Clipboard: watch copies, store, search, pin, auto-delete timer, setting for the time, skip concealed copies | 3-4 days | Copy 10 items, set 1 minute, all unpinned items gone after 1 minute |
+| 3 | [x] (built 2026-11-17, integrate branch; not yet tried on a Mac) Screenshot: capture area by shortcut, editor with number, pen, crop, undo, copy, save, drag-out | 5-7 days | Mark a capture with 1-2-3, crop it, drag it into WhatsApp |
+| 4 | [x] (built 2026-11-17, integrate branch; not yet tried on a Mac) Notes: list, editor, autosave, search | 1-2 days | Note survives quitting and reopening the app |
 | 5 | Install on the director's Mac, fix what he finds | 2-3 days | He uses all three features without help |
 
 Total: about 2-3 weeks. Drag-out and screen capture are the riskiest parts, so step 3 starts with a small spike (a quick test build) for both.
@@ -65,3 +65,4 @@ Total: about 2-3 weeks. Drag-out and screen capture are the riskiest parts, so s
 - 2026-11-17: Mac signing reuses the existing Apple Developer ID certificates; no new Apple cost.
 - 2026-11-17: The director tests each Mac build on his own Mac.
 - 2026-11-17: Mac only for now: the Windows CI job runs only by hand; no local Rust install; all compiling in CI.
+- 2026-11-17: Built all three features the same day as parallel agents, merged on one branch. Code review fixes: the editor saves on Esc and on close; Delete in the clipboard search edits the search text; open captures are not cleaned up. Left for later: editor size on a second display, one shared SQLite connection for screenshots.
