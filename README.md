@@ -50,7 +50,7 @@ Each feature lives in its own files and touches nothing else:
 
 Shared files (change only in a separate, reviewed PR): `src/main.ts` (tabs), `src-tauri/src/lib.rs`
 (tray, shortcut, plugins, routing), `src-tauri/src/db.rs`, `package.json`, `Cargo.toml`,
-`tauri.conf.json`, `src-tauri/capabilities/default.json`, `src-tauri/Info.plist`.
+`tauri.conf.json`, `src-tauri/capabilities/default.json`, `src-tauri/Info.plist`, `src-tauri/src/settings.rs`.
 
 - **Front end:** `src/features/<feature>/index.ts` exports `mount(el)`. The tab calls it once, the
   first time it is shown, with the tab's panel element. The panel is a flex column filling the
@@ -77,6 +77,8 @@ Shared files (change only in a separate, reviewed PR): `src/main.ts` (tabs), `sr
     `aria-selected="true"` is the keyboard-selected row.
   - `.hint`: 11px muted text. `.empty`: centred empty-state message.
   - `.footer`: the bottom hint line of a panel (11px, grey band, full width, pushed to the bottom).
+  - `.undo-bar`: the dark "Item deleted ... Undo" bar above the footer (5 s, then the delete happens).
+  - `.keycap`: one key of a shortcut. `.switch`: an on/off `input type="checkbox" role="switch"`.
   - Layout: a panel is a column of `.toolbar`, `.scroll`, `.footer`. Never use negative margins to
     reach the window edge; the toolbar and scroll do the insetting.
 - **Rust:** `<feature>.rs` has `init(app)`, called once at start-up, and `commands()`, which returns
@@ -99,6 +101,17 @@ Shared files (change only in a separate, reviewed PR): `src/main.ts` (tabs), `sr
   `applog::info/warn/error` in Rust, never `eprintln!` (a release build has no console); pages call
   `invoke("app_log", { level, message })`. Every capture step is logged, and a failed capture
   shows the main window with the error on the Screenshot tab.
+- **Settings and first run:** `src-tauri/src/settings.rs` (commands `settings_*`) keeps
+  `<app data>/settings.json` ("welcome seen"). Open at login uses `tauri-plugin-autostart`
+  (macOS: a LaunchAgent in `~/Library/LaunchAgents`; Windows: value "HL Desk" under
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`), registered with `--hidden`, and is read
+  from the OS, never stored. The first run (no settings.json) turns it on and opens the window with
+  the welcome card. Started with `--hidden`: tray icon only; started by hand: the window opens.
+- **Tray icon:** `src-tauri/icons/tray/`, drawn by `npm run icons:tray` (`scripts/make-tray-icons.mjs`):
+  macOS an 18pt template image, Windows an indigo "HL" square sized to the monitor scale.
+- **macOS Screen Recording:** before each capture `screenshot.rs` checks
+  `CGPreflightScreenCaptureAccess`; if not allowed it calls `CGRequestScreenCaptureAccess` and shows
+  the permission card on the Screenshot tab instead of capturing. Minimum macOS is 10.15.
 - **One instance:** `tauri-plugin-single-instance`. A second launch shows the running window;
   `hl-desk.exe --capture` (first or second launch) starts an area capture, for testing from a script.
 - **Popover:** the main window hides when it loses focus. On Windows it has no maximize or minimize

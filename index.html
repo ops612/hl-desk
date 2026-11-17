@@ -40,10 +40,51 @@
             stroke-width="1.5" stroke-linecap="round"><path d="M3 3l8 8M11 3l-8 8" /></svg>
         </button>
       </div>
-      <dl class="shortcuts" id="shortcuts"></dl>
+      <div class="sheet-body">
+        <h3 class="sheet-section">General</h3>
+        <label class="setting">
+          <span>Open HL Desk at login</span>
+          <input class="switch" id="open-at-login" type="checkbox" role="switch" />
+        </label>
+        <div class="setting">
+          <span>Welcome screen</span>
+          <button class="btn" id="welcome-again" type="button">Show welcome again</button>
+        </div>
+        <p class="setting-error" id="settings-error" role="alert" hidden></p>
+        <h3 class="sheet-section">Shortcuts</h3>
+        <dl class="shortcuts" id="shortcuts"></dl>
+      </div>
       <div class="footer">
         <span id="app-version">HL Desk</span>
         <button class="btn" id="quit" type="button">Quit HL Desk</button>
+      </div>
+    </div>
+
+    <!-- First-run welcome (shown until "Got it" or "Try a capture"; again from Settings). -->
+    <div class="welcome" id="welcome" role="dialog" aria-modal="true" aria-labelledby="welcome-title" hidden>
+      <div class="welcome-body"><div class="welcome-inner">
+        <!-- The tray icon's mark (scripts/make-tray-icons.mjs draws the same shapes). -->
+        <svg class="welcome-logo" width="40" height="40" viewBox="0 0 16 16" aria-hidden="true">
+          <rect width="16" height="16" rx="3.5" fill="#2F4CC8" />
+          <path d="M2 4h2v3h2V4h2v8H6V9H4v3H2zM10 4h2v6h2v2h-4z" fill="#fff" />
+        </svg>
+        <h2 id="welcome-title">Welcome to HL Desk</h2>
+        <p class="hint welcome-lead" id="welcome-lead"></p>
+        <ul class="welcome-list" id="welcome-list"></ul>
+        <div class="welcome-perm" id="welcome-perm" hidden>
+          <div>
+            <strong>Allow screen recording</strong>
+            <p class="hint">macOS asks once. Without it, a capture shows only your wallpaper.</p>
+          </div>
+          <button class="btn" id="welcome-perm-open" type="button">Open Settings</button>
+        </div>
+      </div></div>
+      <div class="footer">
+        <span>Show it again in Settings</span>
+        <span class="welcome-actions">
+          <button class="btn" id="welcome-done" type="button">Got it</button>
+          <button class="btn-primary" id="welcome-try" type="button">Try a capture</button>
+        </span>
       </div>
     </div>
 

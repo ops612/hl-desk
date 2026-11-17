@@ -3,6 +3,7 @@ mod clipboard;
 mod db;
 mod notes;
 mod screenshot;
+mod settings;
 
 use std::{
     sync::atomic::{AtomicU64, Ordering},
@@ -28,6 +29,10 @@ fn toggle_shortcut() -> Shortcut {
 
 /// When the main window last hid itself because it lost focus (Unix ms).
 static BLUR_HIDDEN_AT: AtomicU64 = AtomicU64::new(0);
+/// When the main window was last shown (Unix ms). A focus loss right after showing is ignored:
+/// Windows may refuse the focus to a window opened at start-up (first run, welcome card), and
+/// hiding it then would mean the user never sees it.
+static SHOWN_AT: AtomicU64 = AtomicU64::new(0);
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -56,6 +61,7 @@ pub(crate) fn show_main_window(app: &AppHandle) {
         #[cfg(target_os = "windows")]
         place_near_tray(&window);
         let _ = window.unminimize();
+        SHOWN_AT.store(now_ms(), Ordering::SeqCst);
         let _ = window.show();
         let _ = window.set_focus();
     }
@@ -75,6 +81,40 @@ fn place_near_tray(window: &tauri::WebviewWindow) {
     let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
 }
 
+/// The tray / menu-bar icon (src-tauri/icons/tray/, made by scripts/make-tray-icons.mjs).
+/// macOS: an 18pt template image (36 px for Retina). Windows: the coloured icon in the size that
+/// matches the main monitor's scale (16 px at 100%, 24 px at 150%, 32 px at 200%).
+fn tray_icon(app: &tauri::App) -> tauri::image::Image<'static> {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app;
+        tauri::include_image!("icons/tray/tray-mac@2x.png")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let scale = app
+            .handle()
+            .primary_monitor()
+            .ok()
+            .flatten()
+            .map_or(1.0, |m| m.scale_factor());
+        let px = 16.0 * scale;
+        if px <= 16.5 {
+            tauri::include_image!("icons/tray/tray-16.png")
+        } else if px <= 20.5 {
+            tauri::include_image!("icons/tray/tray-20.png")
+        } else if px <= 24.5 {
+            tauri::include_image!("icons/tray/tray-24.png")
+        } else if px <= 32.5 {
+            tauri::include_image!("icons/tray/tray-32.png")
+        } else if px <= 40.5 {
+            tauri::include_image!("icons/tray/tray-40.png")
+        } else {
+            tauri::include_image!("icons/tray/tray-48.png")
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Each feature has its own command list; commands are named "<feature>_<name>"
@@ -82,6 +122,7 @@ pub fn run() {
     let clipboard_commands = clipboard::commands();
     let screenshot_commands = screenshot::commands();
     let notes_commands = notes::commands();
+    let settings_commands = settings::commands();
     let app_commands = applog::commands();
 
     tauri::Builder::default()
@@ -107,6 +148,14 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_drag::init())
+        // Open at login: a LaunchAgent on macOS (the plugin's default), the HKCU Run key on
+        // Windows, both named "HL Desk". Started at login it gets --hidden: tray icon only.
+        .plugin(
+            tauri_plugin_autostart::Builder::new()
+                .app_name("HL Desk")
+                .arg("--hidden")
+                .build(),
+        )
         .invoke_handler(move |invoke: Invoke| {
             let command = invoke.message.command();
             if command.starts_with("app_") {
@@ -117,6 +166,8 @@ pub fn run() {
                 screenshot_commands(invoke)
             } else if command.starts_with("notes_") {
                 notes_commands(invoke)
+            } else if command.starts_with("settings_") {
+                settings_commands(invoke)
             } else {
                 false
             }
@@ -167,8 +218,11 @@ pub fn run() {
                         toggle_window(tray.app_handle());
                     }
                 });
-            if let Some(icon) = app.default_window_icon() {
-                tray = tray.icon(icon.clone());
+            tray = tray.icon(tray_icon(app));
+            #[cfg(target_os = "macos")]
+            {
+                // Black + alpha: macOS draws it in the menu bar's own colour (light or dark).
+                tray = tray.icon_as_template(true);
             }
             tray.build(app)?;
 
@@ -177,9 +231,17 @@ pub fn run() {
             screenshot::init(handle);
             notes::init(handle);
 
-            // A first launch with --capture starts a capture too (same as a second launch).
-            if std::env::args_os().any(|a| a == "--capture") {
+            // First run: open at login is turned on and the window opens with the welcome card.
+            // Started at login (--hidden): tray icon only. Started by hand: show the window.
+            let first_run = settings::first_run(handle);
+            let has_arg = |name: &str| std::env::args_os().any(|a| a == name);
+            if has_arg("--capture") {
+                // A first launch with --capture starts a capture too (same as a second launch).
                 screenshot::start_capture(handle.clone());
+            } else if first_run || !has_arg("--hidden") {
+                show_main_window(handle);
+            } else {
+                applog::info("started hidden (--hidden)");
             }
             Ok(())
         })
@@ -197,7 +259,10 @@ pub fn run() {
                 // Like a tray popover: a click anywhere else closes it. A capture hides the
                 // window before it starts, and the shortcuts sheet is part of this window, so
                 // neither is affected.
-                WindowEvent::Focused(false) if window.is_visible().unwrap_or(false) => {
+                WindowEvent::Focused(false)
+                    if window.is_visible().unwrap_or(false)
+                        && now_ms().saturating_sub(SHOWN_AT.load(Ordering::SeqCst)) > 1500 =>
+                {
                     BLUR_HIDDEN_AT.store(now_ms(), Ordering::SeqCst);
                     let _ = window.hide();
                 }
