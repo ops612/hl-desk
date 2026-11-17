@@ -1,0 +1,70 @@
+/* Screenshot editor window. Tokens from docs/ui.md (light theme only in v1). */
+:root {
+  --ink: #0b1220;
+  --muted: #5b6474;
+  --border: #e3e6eb;
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --indigo: #2f4cc8;
+  --indigo-hover: #1e3494;
+  --indigo-tint: #eef1fb;
+  color-scheme: light;
+  font: 13px/1.4 "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "PingFang TC", "Segoe UI", sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  display: flex; flex-direction: column;
+  background: var(--surface); color: var(--ink);
+  user-select: none; -webkit-user-select: none;
+}
+button { font: inherit; color: inherit; cursor: pointer; }
+button:focus-visible { outline: 2px solid var(--indigo); outline-offset: 1px; }
+
+.bar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px; border-bottom: 1px solid var(--border);
+}
+.group { display: flex; gap: 4px; }
+.spacer { flex: 1; }
+.tool, .plain {
+  padding: 5px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface);
+}
+.tool:hover, .plain:hover { background: var(--bg); }
+.tool[aria-pressed="true"] { background: var(--indigo-tint); border-color: var(--indigo); color: var(--indigo); font-weight: 500; }
+.plain:disabled { color: var(--muted); cursor: default; background: var(--surface); }
+.swatch {
+  width: 22px; height: 22px; padding: 0; border-radius: 50%;
+  border: 2px solid var(--surface); background: var(--c); box-shadow: 0 0 0 1px var(--border);
+}
+.swatch[aria-checked="true"] { box-shadow: 0 0 0 2px var(--indigo); }
+.primary {
+  padding: 5px 16px; border: 0; border-radius: 10px;
+  background: var(--indigo); color: #fff; font-weight: 500;
+}
+.primary:hover { background: var(--indigo-hover); }
+
+.body { flex: 1; display: flex; min-height: 0; }
+.stage {
+  flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center;
+  background: var(--bg); overflow: hidden; padding: 12px;
+}
+canvas { display: block; box-shadow: 0 1px 4px rgb(11 18 32 / 15%); }
+.stage[data-tool="number"] canvas { cursor: copy; }
+.stage[data-tool="pen"] canvas, .stage[data-tool="crop"] canvas { cursor: crosshair; }
+
+.drag {
+  width: 128px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+  border-left: 1px solid var(--border); color: var(--muted); font-size: 12px; cursor: grab;
+}
+.drag img {
+  max-width: 96px; max-height: 96px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg);
+}
+.drag:hover span { color: var(--indigo); }
+
+.foot {
+  display: flex; justify-content: space-between; gap: 12px;
+  padding: 6px 12px; border-top: 1px solid var(--border); background: var(--bg);
+  color: var(--muted); font-size: 11px;
+}
+#status { color: var(--indigo); }
