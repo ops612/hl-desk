@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HL Desk</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <nav class="tabs" role="tablist">
+      <button role="tab" data-tab="clipboard" aria-selected="true">Clipboard</button>
+      <button role="tab" data-tab="screenshot" aria-selected="false">Screenshot</button>
+      <button role="tab" data-tab="notes" aria-selected="false">Notes</button>
+    </nav>
+    <main>
+      <section role="tabpanel" id="panel-clipboard"></section>
+      <section role="tabpanel" id="panel-screenshot" hidden></section>
+      <section role="tabpanel" id="panel-notes" hidden></section>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
