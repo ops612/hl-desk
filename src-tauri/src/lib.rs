@@ -29,6 +29,10 @@ fn toggle_shortcut() -> Shortcut {
 
 /// When the main window last hid itself because it lost focus (Unix ms).
 static BLUR_HIDDEN_AT: AtomicU64 = AtomicU64::new(0);
+/// When the main window was last shown (Unix ms). A focus loss right after showing is ignored:
+/// Windows may refuse the focus to a window opened at start-up (first run, welcome card), and
+/// hiding it then would mean the user never sees it.
+static SHOWN_AT: AtomicU64 = AtomicU64::new(0);
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -57,6 +61,7 @@ pub(crate) fn show_main_window(app: &AppHandle) {
         #[cfg(target_os = "windows")]
         place_near_tray(&window);
         let _ = window.unminimize();
+        SHOWN_AT.store(now_ms(), Ordering::SeqCst);
         let _ = window.show();
         let _ = window.set_focus();
     }
@@ -254,7 +259,10 @@ pub fn run() {
                 // Like a tray popover: a click anywhere else closes it. A capture hides the
                 // window before it starts, and the shortcuts sheet is part of this window, so
                 // neither is affected.
-                WindowEvent::Focused(false) if window.is_visible().unwrap_or(false) => {
+                WindowEvent::Focused(false)
+                    if window.is_visible().unwrap_or(false)
+                        && now_ms().saturating_sub(SHOWN_AT.load(Ordering::SeqCst)) > 1500 =>
+                {
                     BLUR_HIDDEN_AT.store(now_ms(), Ordering::SeqCst);
                     let _ = window.hide();
                 }
