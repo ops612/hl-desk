@@ -3,5 +3,5 @@
   "identifier": "editor",
   "description": "Permissions for the screenshot editor windows (label editor-<id>, created in screenshot.rs).",
   "windows": ["editor-*"],
-  "permissions": ["core:default", "drag:default"]
+  "permissions": ["core:default", "core:window:allow-destroy", "drag:default"]
 }

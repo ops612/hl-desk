@@ -15,7 +15,7 @@ use serde::Serialize;
 use tauri::{
     image::Image,
     ipc::{Invoke, InvokeBody, Request, Response},
-    AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
+    AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
@@ -145,6 +145,10 @@ fn cleanup(app: &AppHandle) -> Res<usize> {
         rows.filter_map(Result::ok).collect()
     };
     for (id, path) in &old {
+        // Keep a capture that is open in the editor; the next clean-up removes it.
+        if app.get_webview_window(&format!("editor-{id}")).is_some() {
+            continue;
+        }
         let _ = std::fs::remove_file(path);
         c.execute("DELETE FROM shots WHERE id = ?1", [id]).map_err(err)?;
     }
@@ -259,14 +263,8 @@ fn open_editor(app: &AppHandle, id: i64) -> Res<()> {
     .focused(true)
     .build()
     .map_err(err)?;
-
-    // lib.rs hides every window on close (right for the popover); an editor is closed for good.
-    let this = window.clone();
-    window.on_window_event(move |event| {
-        if let WindowEvent::CloseRequested { .. } = event {
-            let _ = this.destroy();
-        }
-    });
+    // Closing: the editor page saves on close-requested, then the window closes (lib.rs only
+    // keeps the "main" window alive).
     let _ = window.set_focus();
     Ok(())
 }

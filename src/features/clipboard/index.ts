@@ -174,7 +174,8 @@ export function mount(el: HTMLElement): void {
     } else if (mod && e.key.toLowerCase() === "p" && item) {
       e.preventDefault();
       void togglePin(item);
-    } else if ((e.key === "Delete" || (mod && e.key === "Backspace")) && item) {
+    } else if ((e.key === "Delete" || (mod && e.key === "Backspace")) && item && !search.value) {
+      // With text in the search box these keys edit the search, not the list.
       e.preventDefault();
       void remove(item);
     }

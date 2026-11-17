@@ -48,7 +48,7 @@ export function mount(el: HTMLElement): void {
 async function render(grid: HTMLElement): Promise<void> {
   const shots = await invoke<Shot[]>("screenshot_list");
   if (shots.length === 0) {
-    grid.innerHTML = `<p class="shot-empty">No screenshots yet.<br />Press <kbd>${shortcut}</kbd> or Capture area, then drag over what you want.</p>`;
+    grid.innerHTML = `<p class="shot-empty">No screenshots yet.<br />Press <kbd>${shortcut}</kbd> or Capture area, then drag over what you want.<br /><br />First time on a Mac: if the capture shows only your wallpaper, turn on HL Desk in System Settings → Privacy &amp; Security → Screen Recording, then quit and reopen HL Desk.</p>`;
   } else {
     const cards = await Promise.all(shots.map(card));
     grid.replaceChildren(...cards);

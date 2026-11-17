@@ -1,6 +1,7 @@
 // Screenshot editor window (editor.html?id=<capture id>), opened by src-tauri/src/screenshot.rs.
 // The edits are a list of operations drawn over the original image, so undo is "drop the last one".
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
 import "./editor.css";
 
@@ -244,15 +245,28 @@ function applyCrop(): void {
 }
 
 function undo(): void {
-  if (selection) selection = null;
-  else ops.pop();
-  changed();
+  if (selection) {
+    selection = null;
+    render();
+  } else if (ops.pop()) changed();
 }
 
 // ---------- save, copy, drag, close ----------
 
+// One save at a time: a second call waits for the running one, then saves only if more changed.
+let saving: Promise<void> | null = null;
 async function save(): Promise<void> {
+  while (saving) await saving.catch(() => {});
   if (version === savedVersion) return;
+  saving = writePng();
+  try {
+    await saving;
+  } finally {
+    saving = null;
+  }
+}
+
+async function writePng(): Promise<void> {
   const at = version;
   render(false);
   const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
@@ -331,11 +345,11 @@ document.addEventListener("keydown", (e) => {
   } else if (e.key === "Enter" && selection) {
     applyCrop();
   } else if (e.key === "Escape") {
-    // Esc first cancels a crop rectangle, then closes the editor (without saving; Done saves).
+    // Esc first cancels a crop rectangle, then saves and closes the editor (same as Done).
     if (selection) {
       selection = null;
       render();
-    } else run(() => invoke("screenshot_close"));
+    } else run(done);
   } else if (!mod && !e.altKey) {
     const key = e.key.toLowerCase();
     if (key === "n") setTool("number");
@@ -344,6 +358,12 @@ document.addEventListener("keydown", (e) => {
   }
 });
 window.addEventListener("resize", fit);
+
+// The red close button saves too, so markup is never lost. Tauri waits for this handler,
+// then closes the window (needs core:window:allow-destroy in capabilities/editor.json).
+void getCurrentWindow().onCloseRequested(async () => {
+  await save().catch(() => {});
+});
 
 // ---------- start ----------
 
