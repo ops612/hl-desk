@@ -13,3 +13,16 @@
 .notes-editor-view .toolbar { padding-bottom: 8px; }
 .notes-status { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .field.notes-body { flex: 1; min-height: 0; width: auto; margin: 0 var(--inset) var(--inset); line-height: 1.5; }
+/* Mic (dictation): round; while listening it turns indigo with a soft pulse (not filled, so the
+   view keeps one primary button). */
+.icon-btn.notes-mic { border: 1px solid var(--border); border-radius: 50%; }
+.icon-btn.notes-mic.active {
+  border-color: var(--indigo); background: var(--indigo-tint); color: var(--indigo);
+  animation: notes-mic-pulse 1.6s ease-out infinite;
+}
+@keyframes notes-mic-pulse {
+  0% { box-shadow: 0 0 0 0 rgb(47 76 200 / 35%); }
+  100% { box-shadow: 0 0 0 6px rgb(47 76 200 / 0%); }
+}
+.notes-voice { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.notes-voice-settings { flex: none; }

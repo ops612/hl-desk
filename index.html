@@ -29,8 +29,10 @@
       </span>
     </header>
 
-    <!-- "HL Desk <version> is ready" line, shown once an update is downloaded (src/updater.ts). -->
+    <!-- "Update ready · <version>" card, shown once an update is downloaded (src/updater.ts). -->
     <div class="update-bar" data-update-bar role="status" hidden></div>
+    <!-- "Updated to <version> ✓ · What's new", once after an update (src/updater.ts). -->
+    <div class="update-bar updated-line" id="updated-line" role="status" hidden></div>
 
     <nav class="segmented" role="tablist" aria-label="Sections">
       <button role="tab" type="button" id="tab-clipboard" data-tab="clipboard" aria-controls="panel-clipboard" aria-selected="true">Clipboard</button>
@@ -65,8 +67,8 @@
           <button class="btn" id="welcome-again" type="button">Show welcome again</button>
         </div>
         <div class="setting">
-          <span class="setting-label">Updates<span class="hint" id="update-status" role="status"></span></span>
-          <button class="btn" id="update-check" type="button">Check for updates</button>
+          <span class="setting-label">Updates<span class="hint" id="update-status" role="status"></span><span class="hint" id="update-last"></span></span>
+          <button class="btn" id="update-check" type="button">Check now</button>
         </div>
         <p class="setting-error" id="settings-error" role="alert" hidden></p>
         <h3 class="sheet-section">Shortcuts</h3>

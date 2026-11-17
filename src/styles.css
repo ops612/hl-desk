@@ -168,15 +168,34 @@ label.setting { cursor: pointer; }
 .setting-label .hint { display: block; overflow-wrap: anywhere; }
 .setting-label .hint:empty { display: none; }
 
-/* "HL Desk <version> is ready · Restart to update · Later" (src/updater.ts): under the header,
-   and at the top of Settings. */
+/* Update card (src/updater.ts): "Update ready · <version>", up to three lines from the release
+   notes, then Later and Restart to update. Under the header, and at the top of Settings. */
 .update-bar {
-  display: flex; flex: none; align-items: center; gap: 6px; margin: 4px var(--inset) 0; padding: 4px 4px 4px 10px;
+  display: flex; flex: none; flex-direction: column; gap: 4px; margin: 4px var(--inset) 0; padding: 8px 10px;
   border-radius: var(--radius); background: var(--indigo-tint); font-size: 12px;
 }
 .sheet-body .update-bar { margin: 4px 0 0; }
-.update-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.update-title { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.update-notes { margin: 0; padding: 0 0 0 16px; color: var(--muted); font-size: 11px; }
+.update-notes li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.update-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 2px; }
 .update-bar .btn, .update-bar .btn-primary { height: 26px; padding: 0 10px; border-radius: var(--radius-sm); font-size: 11px; }
+/* "Updated to <version> ✓ · What's new": one line, after an update. */
+.update-bar.updated-line { flex-direction: row; align-items: center; gap: 8px; padding: 4px 4px 4px 10px; }
+.updated-line .update-title { flex: 1; min-width: 0; }
+.updated-line .icon-btn { width: 24px; height: 24px; }
+/* A text button that reads as a link (What's new). */
+.link-btn {
+  flex: none; padding: 0; border: 0; background: none; color: var(--indigo); font-size: 12px; font-weight: 500;
+  text-decoration: underline; text-underline-offset: 2px; cursor: pointer;
+}
+.link-btn:hover { color: var(--indigo-hover); }
+/* Indigo dot on the wordmark while an update is ready. */
+.wordmark { position: relative; }
+.wordmark.has-update::after {
+  content: ""; position: absolute; top: -1px; right: -8px; width: 6px; height: 6px;
+  border-radius: 50%; background: var(--indigo);
+}
 .update-error { color: var(--red); }
 .shortcuts { margin: 0; }
 .shortcuts div {

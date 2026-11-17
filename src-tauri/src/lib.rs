@@ -43,8 +43,40 @@ fn shell_set_pinned(pinned: bool) {
     PINNED.store(pinned, Ordering::SeqCst);
 }
 
+/// The page found it was just updated (src/updater.ts): show the window even if this start had
+/// --hidden (the updater restarts HL Desk with the arguments it had).
+#[tauri::command]
+fn shell_show_main(app: AppHandle) {
+    applog::info("showing the window after an update");
+    show_main_window(&app);
+}
+
+/// Links the pages may open in the default browser or System Settings. Nothing else is opened.
+const OPEN_URL_PREFIXES: [&str; 2] = [
+    "https://github.com/ops612/hl-desk-releases/",
+    "x-apple.systempreferences:",
+];
+
+#[tauri::command]
+fn shell_open_url(url: String) -> Result<(), String> {
+    if !OPEN_URL_PREFIXES.iter().any(|p| url.starts_with(p)) || url.contains(['"', ' ', '\n']) {
+        return Err("This link is not allowed.".into());
+    }
+    applog::info(&format!("open url: {url}"));
+    #[cfg(target_os = "macos")]
+    let opened = std::process::Command::new("open").arg(&url).spawn();
+    #[cfg(target_os = "windows")]
+    let opened = std::process::Command::new("explorer.exe").arg(&url).spawn();
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let opened = std::process::Command::new("xdg-open").arg(&url).spawn();
+    opened.map(|_| ()).map_err(|e| {
+        applog::error(&format!("open url failed: {e}"));
+        e.to_string()
+    })
+}
+
 fn shell_handlers() -> impl Fn(Invoke) -> bool + Send + Sync + 'static {
-    tauri::generate_handler![shell_set_pinned]
+    tauri::generate_handler![shell_set_pinned, shell_show_main, shell_open_url]
 }
 
 fn now_ms() -> u64 {
@@ -280,9 +312,11 @@ pub fn run() {
                 }
                 // Like a tray popover: a click anywhere else closes it. A capture hides the
                 // window before it starts, and the shortcuts sheet is part of this window, so
-                // neither is affected. Pinned (header pin button): it stays open.
+                // neither is affected. Pinned (header pin button): it stays open. So it does
+                // while Notes dictation may be running (Windows' voice typing bar takes the focus).
                 WindowEvent::Focused(false)
                     if !PINNED.load(Ordering::SeqCst)
+                        && !notes::keep_open()
                         && window.is_visible().unwrap_or(false)
                         && now_ms().saturating_sub(SHOWN_AT.load(Ordering::SeqCst)) > 1500 =>
                 {
