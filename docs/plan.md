@@ -34,7 +34,7 @@ Approach: build once, use forever. Few dependencies, no server, no account, noth
 
 | # | Step | Rough time | Check |
 |---|------|-----------|-------|
-| 1 | New private repo, Tauri skeleton, menu bar icon, signed Mac + Windows installers built by GitHub Actions | 1-2 days | Mac .dmg installs with no warning; Windows installer opens an empty window |
+| 1 | [x] New private repo, Tauri skeleton, menu bar icon, signed Mac + Windows installers built by GitHub Actions (done 2026-11-17, b829a36; Windows job runs by hand only) | 1-2 days | Mac .dmg installs with no warning; Windows installer opens an empty window |
 | 2 | Clipboard: watch copies, store, search, pin, auto-delete timer, setting for the time, skip concealed copies | 3-4 days | Copy 10 items, set 1 minute, all unpinned items gone after 1 minute |
 | 3 | Screenshot: capture area by shortcut, editor with number, pen, crop, undo, copy, save, drag-out | 5-7 days | Mark a capture with 1-2-3, crop it, drag it into WhatsApp |
 | 4 | Notes: list, editor, autosave, search | 1-2 days | Note survives quitting and reopening the app |
