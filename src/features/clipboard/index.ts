@@ -26,17 +26,21 @@ const DELETE_ICON =
   '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
 
 const isMac = navigator.userAgent.includes("Mac");
-/** How long "Item deleted · Undo" stays before the item is really deleted. */
+/** How long "Item deleted · Undo" (or "N older items removed · Undo") stays. */
 const UNDO_MS = 5000;
+/** How long "Copied" shows before the popover hides; pinned, it stays open and the notice longer. */
+const COPIED_MS = 700;
+const COPIED_PINNED_MS = 1500;
 
 export function mount(el: HTMLElement): void {
   el.innerHTML = `
     <div class="toolbar"><input class="field" type="search" placeholder="Search clipboard" aria-label="Search clipboard" spellcheck="false" /></div>
     <ul class="scroll cb-list" role="listbox" aria-label="Clipboard history"></ul>
     <div class="undo-bar" role="status" hidden>
-      <span>Item deleted</span>
+      <span class="cb-undo-text">Item deleted</span>
       <button type="button">Undo</button>
     </div>
+    <div class="toast" role="status" hidden>Copied, press <kbd>${isMac ? "⌘V" : "Ctrl+V"}</kbd> to paste</div>
     <footer class="footer">
       <span>Click to copy · ${isMac ? "⌘P" : "Ctrl+P"} pin</span>
       <label class="cb-keep">Keep <select class="select" aria-label="Keep items for"></select></label>
@@ -45,12 +49,17 @@ export function mount(el: HTMLElement): void {
   const list = el.querySelector<HTMLUListElement>(".cb-list")!;
   const keep = el.querySelector<HTMLSelectElement>("select")!;
   const undoBar = el.querySelector<HTMLElement>(".undo-bar")!;
+  const undoText = el.querySelector<HTMLElement>(".cb-undo-text")!;
+  const toast = el.querySelector<HTMLElement>(".toast")!;
 
   let items: Item[] = [];
   let selected = 0;
   let keepHours = 24;
   /** A deleted item still in its undo time: hidden from the list, deleted when the timer ends. */
-  let pending: { id: number; timer: number } | null = null;
+  let pendingId: number | null = null;
+  /** What the undo bar offers: commit runs when the 5 s end (or another undoable action starts). */
+  let undo: { timer: number; commit: () => Promise<void>; revert: () => Promise<void> } | null = null;
+  let copiedTimer: number | undefined;
 
   function timeLeft(item: Item): string {
     if (item.pinned) return "Pinned";
@@ -127,16 +136,27 @@ export function mount(el: HTMLElement): void {
 
   async function refresh(): Promise<void> {
     const all = await invoke<Item[]>("clipboard_list", { query: search.value });
-    items = all.filter((item) => item.id !== pending?.id);
+    items = all.filter((item) => item.id !== pendingId);
     selected = Math.min(selected, Math.max(0, items.length - 1));
     render();
   }
 
+  /** Copies, shows "Copied, press Ctrl+V to paste", then hides the popover (unless pinned). */
   async function copy(item: Item): Promise<void> {
-    // Rust writes the text to the clipboard and hides the window.
     await invoke("clipboard_copy", { id: item.id });
     search.value = "";
     selected = 0;
+    void refresh();
+    const pinned = document.body.dataset.pinned === "true";
+    toast.hidden = false;
+    clearTimeout(copiedTimer);
+    copiedTimer = window.setTimeout(
+      () => {
+        toast.hidden = true;
+        if (!pinned) getCurrentWindow().hide().catch(() => {});
+      },
+      pinned ? COPIED_PINNED_MS : COPIED_MS,
+    );
   }
 
   async function togglePin(item: Item): Promise<void> {
@@ -144,34 +164,52 @@ export function mount(el: HTMLElement): void {
     await refresh();
   }
 
-  // ---- Delete with undo (like Notes): hide at once, delete for real after 5 s ----
+  // ---- Undo bar, shared by delete and the Keep change ----
 
-  async function commitPending(): Promise<void> {
-    const p = pending;
-    if (!p) return;
-    clearTimeout(p.timer);
-    pending = null;
+  async function commitUndo(): Promise<void> {
+    const u = undo;
+    if (!u) return;
+    clearTimeout(u.timer);
+    undo = null;
     undoBar.hidden = true;
-    await invoke("clipboard_delete", { id: p.id }).catch(() => {});
+    await u.commit();
   }
 
-  async function remove(item: Item): Promise<void> {
-    await commitPending();
-    pending = { id: item.id, timer: window.setTimeout(() => void commitPending().then(refresh), UNDO_MS) };
+  async function offerUndo(text: string, commit: () => Promise<void>, revert: () => Promise<void>): Promise<void> {
+    await commitUndo();
+    undoText.textContent = text;
+    undo = { commit, revert, timer: window.setTimeout(() => void commitUndo().then(refresh), UNDO_MS) };
     undoBar.hidden = false;
+  }
+
+  undoBar.querySelector("button")!.addEventListener("click", async () => {
+    const u = undo;
+    if (!u) return;
+    clearTimeout(u.timer);
+    undo = null;
+    undoBar.hidden = true;
+    await u.revert().catch(() => {});
+    void refresh();
+    search.focus();
+  });
+
+  // Delete (like Notes): hide at once, delete for real after 5 s.
+  async function remove(item: Item): Promise<void> {
+    await offerUndo(
+      "Item deleted",
+      async () => {
+        await invoke("clipboard_delete", { id: item.id }).catch(() => {});
+        if (pendingId === item.id) pendingId = null;
+      },
+      async () => {
+        pendingId = null;
+      },
+    );
+    pendingId = item.id;
     items = items.filter((i) => i.id !== item.id);
     selected = Math.min(selected, Math.max(0, items.length - 1));
     render();
   }
-
-  undoBar.querySelector("button")!.addEventListener("click", () => {
-    if (!pending) return;
-    clearTimeout(pending.timer);
-    pending = null;
-    undoBar.hidden = true;
-    void refresh();
-    search.focus();
-  });
 
   async function loadSettings(): Promise<void> {
     const settings = await invoke<{ keepHours: number }>("clipboard_get_settings");
@@ -183,9 +221,32 @@ export function mount(el: HTMLElement): void {
     );
   }
 
+  // A shorter Keep removes older unpinned items at once, with "N older items removed · Undo".
+  // Undo puts the items and the old Keep back (Rust: clipboard_undo_keep).
   keep.addEventListener("change", async () => {
-    await invoke("clipboard_set_keep_hours", { hours: Number(keep.value) });
-    keepHours = Number(keep.value);
+    const before = keepHours;
+    const hours = Number(keep.value);
+    await commitUndo();
+    let removed: Item[];
+    try {
+      removed = await invoke<Item[]>("clipboard_set_keep_hours", { hours });
+    } catch {
+      keep.value = String(before);
+      return;
+    }
+    keepHours = hours;
+    if (removed.length > 0) {
+      const n = removed.length;
+      await offerUndo(
+        `${n} older ${n === 1 ? "item" : "items"} removed`,
+        async () => {},
+        async () => {
+          await invoke("clipboard_undo_keep", { hours: before, items: removed });
+          keepHours = before;
+          keep.value = String(before);
+        },
+      );
+    }
     await refresh();
   });
 
@@ -223,6 +284,7 @@ export function mount(el: HTMLElement): void {
   // Window shown again: start fresh with the newest item selected.
   void getCurrentWindow().onFocusChanged(({ payload: focused }) => {
     if (!focused) return;
+    if (document.body.dataset.pinned !== "true") toast.hidden = true;
     selected = 0;
     if (!el.hidden) search.focus();
     void refresh();
