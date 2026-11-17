@@ -24,11 +24,16 @@ Running the whole app (`npm run tauri dev`) needs Rust and, on Windows, the MSVC
 
 - **macOS** (every push to `main`, and by hand): compiles a universal binary (Apple Silicon + Intel),
   then builds the `.app` and `.dmg`, signs them with the Developer ID certificate, notarizes and staples
-  both, checks them with `spctl` and uploads the `.dmg` as the artifact `HL-Desk-macos-universal`.
+  both, checks them with `spctl` and uploads the `.dmg` as the artifact `HL-Desk-macos-universal`,
+  together with the signed updater bundle (`HL Desk.app.tar.gz` and its `.sig`).
   If a signing secret is missing the job fails and names it; it never ships an unsigned build.
   It also uploads the resolved `Cargo.lock`.
 - **Windows** (every push to `main`, and by hand): builds an unsigned NSIS installer,
-  artifact `HL-Desk-windows`. Windows asks "More info, Run anyway" once.
+  artifact `HL-Desk-windows`, with its updater signature (`-setup.exe.sig`). Windows asks
+  "More info, Run anyway" once.
+- Both jobs sign the updater files with `TAURI_SIGNING_PRIVATE_KEY` and
+  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (repository secrets) and fail if a `.sig` is missing.
+  Releasing and `latest.json`: `docs/release.md`.
 
 Repository secrets used by the macOS job (names only):
 

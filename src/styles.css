@@ -163,6 +163,21 @@ textarea.field { height: auto; padding: 8px 10px; resize: none; }
 label.setting { cursor: pointer; }
 .setting .btn { height: 26px; padding: 0 10px; border-radius: var(--radius-sm); font-size: 11px; }
 .setting-error { margin: 6px 0 0; color: var(--red); font-size: 12px; }
+/* A label with a hint line under it (Settings > Updates). */
+.setting-label { min-width: 0; }
+.setting-label .hint { display: block; overflow-wrap: anywhere; }
+.setting-label .hint:empty { display: none; }
+
+/* "HL Desk <version> is ready · Restart to update · Later" (src/updater.ts): under the header,
+   and at the top of Settings. */
+.update-bar {
+  display: flex; flex: none; align-items: center; gap: 6px; margin: 4px var(--inset) 0; padding: 4px 4px 4px 10px;
+  border-radius: var(--radius); background: var(--indigo-tint); font-size: 12px;
+}
+.sheet-body .update-bar { margin: 4px 0 0; }
+.update-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.update-bar .btn, .update-bar .btn-primary { height: 26px; padding: 0 10px; border-radius: var(--radius-sm); font-size: 11px; }
+.update-error { color: var(--red); }
 .shortcuts { margin: 0; }
 .shortcuts div {
   display: flex; justify-content: space-between; gap: 12px; padding: 8px 0;

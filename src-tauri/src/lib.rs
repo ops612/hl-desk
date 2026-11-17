@@ -170,6 +170,12 @@ pub fn run() {
                 .arg("--hidden")
                 .build(),
         )
+        // Auto-update (tauri.conf.json plugins.updater): src/updater.ts checks and downloads in
+        // the background and installs only on the user's click. Windows: install() runs the NSIS
+        // installer (passive) and exits; the installer starts HL Desk again. macOS: the page
+        // relaunches through the process plugin.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .invoke_handler(move |invoke: Invoke| {
             let command = invoke.message.command();
             if command.starts_with("app_") {
