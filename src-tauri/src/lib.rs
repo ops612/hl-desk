@@ -1,7 +1,13 @@
+mod applog;
 mod clipboard;
 mod db;
 mod notes;
 mod screenshot;
+
+use std::{
+    sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use tauri::{
     ipc::Invoke,
@@ -20,16 +26,38 @@ fn toggle_shortcut() -> Shortcut {
     Shortcut::new(Some(main | Modifiers::SHIFT), Code::Space)
 }
 
+/// When the main window last hid itself because it lost focus (Unix ms).
+static BLUR_HIDDEN_AT: AtomicU64 = AtomicU64::new(0);
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 fn toggle_window(app: &AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    if window.is_visible().unwrap_or(false) {
+        let _ = window.hide();
+    } else if now_ms().saturating_sub(BLUR_HIDDEN_AT.load(Ordering::SeqCst)) < 500 {
+        // A click on the tray icon first takes the focus away (the window hides on blur), then
+        // arrives here: that click meant "close", so do not open it again.
+    } else {
+        show_main_window(app);
+    }
+}
+
+/// Shows the main window and gives it the keyboard (also used to show a capture error).
+pub(crate) fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
-        if window.is_visible().unwrap_or(false) {
-            let _ = window.hide();
-        } else {
-            #[cfg(target_os = "windows")]
-            place_near_tray(&window);
-            let _ = window.show();
-            let _ = window.set_focus();
-        }
+        #[cfg(target_os = "windows")]
+        place_near_tray(&window);
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
     }
 }
 
@@ -54,8 +82,19 @@ pub fn run() {
     let clipboard_commands = clipboard::commands();
     let screenshot_commands = screenshot::commands();
     let notes_commands = notes::commands();
+    let app_commands = applog::commands();
 
     tauri::Builder::default()
+        // Must be the first plugin. A second launch only wakes this one: it shows the window,
+        // or with --capture starts an area capture (lets a script test capture).
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            applog::info(&format!("second launch: {:?}", argv.get(1..).unwrap_or_default()));
+            if argv.iter().any(|a| a == "--capture") {
+                screenshot::start_capture(app.clone());
+            } else {
+                show_main_window(app);
+            }
+        }))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
@@ -70,7 +109,9 @@ pub fn run() {
         .plugin(tauri_plugin_drag::init())
         .invoke_handler(move |invoke: Invoke| {
             let command = invoke.message.command();
-            if command.starts_with("clipboard_") {
+            if command.starts_with("app_") {
+                app_commands(invoke)
+            } else if command.starts_with("clipboard_") {
                 clipboard_commands(invoke)
             } else if command.starts_with("screenshot_") {
                 screenshot_commands(invoke)
@@ -81,7 +122,25 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            app.global_shortcut().register(toggle_shortcut())?;
+            applog::init(app.handle());
+            applog::info(&format!(
+                "HL Desk {} started (args: {:?})",
+                app.package_info().version,
+                std::env::args_os().skip(1).collect::<Vec<_>>()
+            ));
+            if let Err(e) = app.global_shortcut().register(toggle_shortcut()) {
+                applog::error(&format!("could not register the open shortcut: {e}"));
+                return Err(e.into());
+            }
+
+            // Windows: a tray popover, so no maximize or minimize button and a fixed size
+            // (macOS keeps the window from tauri.conf.json).
+            #[cfg(target_os = "windows")]
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_resizable(false);
+                let _ = window.set_maximizable(false);
+                let _ = window.set_minimizable(false);
+            }
 
             let open = MenuItem::with_id(app, "open", "Open HL Desk", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit HL Desk", true, None::<&str>)?;
@@ -91,7 +150,7 @@ pub fn run() {
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "open" => toggle_window(app),
+                    "open" => show_main_window(app),
                     "quit" => app.exit(0),
                     _ => {}
                 })
@@ -114,17 +173,32 @@ pub fn run() {
             clipboard::init(handle);
             screenshot::init(handle);
             notes::init(handle);
+
+            // A first launch with --capture starts a capture too (same as a second launch).
+            if std::env::args_os().any(|a| a == "--capture") {
+                screenshot::start_capture(handle.clone());
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Closing the main window only hides it; the app keeps running in the menu bar / tray.
-            // Other windows (the screenshot editor) close normally.
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() != "main" {
-                    return;
+            // Other windows (the screenshot editor, the capture overlay) behave normally.
+            if window.label() != "main" {
+                return;
+            }
+            match event {
+                // Closing the main window only hides it; the app keeps running in the menu bar / tray.
+                WindowEvent::CloseRequested { api, .. } => {
+                    api.prevent_close();
+                    let _ = window.hide();
                 }
-                api.prevent_close();
-                let _ = window.hide();
+                // Like a tray popover: a click anywhere else closes it. A capture hides the
+                // window before it starts, and the shortcuts sheet is part of this window, so
+                // neither is affected.
+                WindowEvent::Focused(false) if window.is_visible().unwrap_or(false) => {
+                    BLUR_HIDDEN_AT.store(now_ms(), Ordering::SeqCst);
+                    let _ = window.hide();
+                }
+                _ => {}
             }
         })
         .run(tauri::generate_context!())

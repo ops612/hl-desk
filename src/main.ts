@@ -2,6 +2,7 @@ import "@fontsource/ibm-plex-sans/400.css";
 import "@fontsource/ibm-plex-sans/500.css";
 import "@fontsource/ibm-plex-sans/600.css";
 import { exit, getVersion } from "@tauri-apps/api/app";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import * as clipboard from "./features/clipboard";
 import * as notes from "./features/notes";
@@ -118,3 +119,6 @@ try {
   // Storage unavailable.
 }
 show(saved ?? order[0]);
+
+// A failed capture shows this window (Rust) with the error on the Screenshot tab.
+void listen("screenshot-error", () => show("screenshot"));

@@ -88,3 +88,12 @@ Shared files (change only in a separate, reviewed PR): `src/main.ts` (tabs), `sr
   window per monitor (`overlay.html`, `src/overlay/`, capability `overlay.json`); the user drags a
   rectangle there (Esc or right-click cancels). macOS uses `screencapture -i` instead.
 - **macOS:** `src-tauri/Info.plist` sets `LSUIElement` (no Dock icon) and the Screen Recording prompt text.
+- **Log:** `src-tauri/src/applog.rs` writes `<app data>/hl-desk.log` (UTC time, level, message; cut
+  to the last ~500 KB past 1 MB; on Windows `%APPDATA%\com.hobbyland.hldesk\hl-desk.log`). Use
+  `applog::info/warn/error` in Rust, never `eprintln!` (a release build has no console); pages call
+  `invoke("app_log", { level, message })`. Every capture step is logged, and a failed capture
+  shows the main window with the error on the Screenshot tab.
+- **One instance:** `tauri-plugin-single-instance`. A second launch shows the running window;
+  `hl-desk.exe --capture` (first or second launch) starts an area capture, for testing from a script.
+- **Popover:** the main window hides when it loses focus. On Windows it has no maximize or minimize
+  button and a fixed size.

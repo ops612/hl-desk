@@ -19,6 +19,8 @@ tauri-plugin-clipboard-manager = "2.5"
 tauri-plugin-fs = "2.7"
 # Drag a file out of the window into another app (CrabNebula, macOS + Windows).
 tauri-plugin-drag = "2.1"
+# One running copy; a second launch focuses it, or with --capture starts a capture.
+tauri-plugin-single-instance = "2.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Local store: one SQLite file per feature in the app data folder (see db.rs).

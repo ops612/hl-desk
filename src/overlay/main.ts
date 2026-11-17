@@ -19,11 +19,29 @@ let rect: Rect = { x: 0, y: 0, w: 0, h: 0 };
 let finished = false;
 let focusing = false;
 
+/** Esc or right-click. */
 function cancel(): void {
   if (finished) return;
   finished = true;
   void invoke("screenshot_overlay_cancel");
 }
+
+/** Something failed: write it to the app log, then end the capture with the reason, which the
+ * main window shows. Never a silent cancel. */
+function fail(step: string, e: unknown): void {
+  const detail = `${step}: ${e instanceof Error ? e.message : String(e)}`;
+  const reason = `The capture overlay failed (${detail}).`;
+  void invoke("app_log", { level: "error", message: `overlay ${monitor}: ${detail}` })
+    .catch(() => {})
+    .finally(() => {
+      if (finished) return;
+      finished = true;
+      void invoke("screenshot_overlay_cancel", { reason });
+    });
+}
+
+window.addEventListener("error", (e) => fail("script error", e.error ?? e.message));
+window.addEventListener("unhandledrejection", (e) => fail("unhandled promise", e.reason));
 
 /** CSS pixels to the frozen image's physical pixels (the monitor's scale factor). */
 function physical(r: Rect): Rect {
@@ -84,7 +102,9 @@ document.addEventListener("pointermove", (e) => {
   // The keyboard (Esc) follows the pointer from one monitor's overlay to the next.
   if (!document.hasFocus() && !focusing) {
     focusing = true;
-    invoke("screenshot_overlay_show").finally(() => (focusing = false));
+    invoke("screenshot_overlay_show")
+      .catch((e) => fail("focusing the overlay", e))
+      .finally(() => (focusing = false));
   }
   track(e);
 });
@@ -101,7 +121,12 @@ document.addEventListener("pointerup", (e) => {
     return;
   }
   finished = true;
-  void invoke("screenshot_overlay_done", { index: monitor, x: p.x, y: p.y, width: p.w, height: p.h });
+  invoke("screenshot_overlay_done", { index: monitor, x: p.x, y: p.y, width: p.w, height: p.h }).catch(
+    (e) => {
+      finished = false; // let fail() end the capture with the reason
+      fail("sending the area", e);
+    },
+  );
 });
 
 document.addEventListener("contextmenu", (e) => {
@@ -116,11 +141,17 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-// Load the frozen screen, then ask Rust to show this window (it is created hidden, so no white flash).
+// Load the frozen screen, then ask Rust to show this window (it is created hidden, so no white
+// flash). Waits for the image's load event, not img.decode(): this page is still hidden here,
+// and decode() is not guaranteed to settle for a page that is not visible.
 invoke<ArrayBuffer>("screenshot_overlay_image", { index: monitor })
-  .then((bytes) => {
-    shot.src = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
-    return shot.decode();
-  })
+  .then(
+    (bytes) =>
+      new Promise<void>((resolve, reject) => {
+        shot.onload = () => resolve();
+        shot.onerror = () => reject(new Error("the frozen screen image did not load"));
+        shot.src = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
+      }),
+  )
   .then(() => invoke("screenshot_overlay_show"))
-  .catch(cancel);
+  .catch((e) => fail("loading the frozen screen", e));

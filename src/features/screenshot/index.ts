@@ -43,6 +43,14 @@ export function mount(el: HTMLElement): void {
     invoke("screenshot_capture").catch(showError);
   });
 
+  // A failed capture (Rust shows this window and sends the message). One sent before this tab
+  // was first opened is picked up with screenshot_last_error.
+  const showFailure = (message: string) => showError(`Capture failed. ${message}`);
+  void listen<string>("screenshot-error", (e) => showFailure(e.payload));
+  invoke<string | null>("screenshot_last_error")
+    .then((message) => message && showFailure(message))
+    .catch(() => {});
+
   const refresh = () => render(grid).catch(showError);
   void listen("screenshot-changed", refresh);
   setInterval(refresh, 60_000); // keeps "time left" current

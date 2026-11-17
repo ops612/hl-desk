@@ -301,8 +301,18 @@ function flash(text: string): void {
   flashTimer = window.setTimeout(() => (statusEl.textContent = ""), 2500);
 }
 
+/** Writes a failure to the app log (hl-desk.log); the window has no console in a release build. */
+function logError(step: string, e: unknown): void {
+  void invoke("app_log", { level: "error", message: `editor ${id}: ${step}: ${String(e)}` }).catch(
+    () => {},
+  );
+}
+
 function run(action: () => Promise<void>): void {
-  action().catch((e) => flash(String(e)));
+  action().catch((e) => {
+    logError("action", e);
+    flash(String(e));
+  });
 }
 
 // "Drag me": saves the edits to the file, then starts a native file drag of it.
@@ -363,7 +373,7 @@ window.addEventListener("resize", fit);
 // The red close button saves too, so markup is never lost. Tauri waits for this handler,
 // then closes the window (needs core:window:allow-destroy in capabilities/editor.json).
 void getCurrentWindow().onCloseRequested(async () => {
-  await save().catch(() => {});
+  await save().catch((e) => logError("save on close", e));
 });
 
 // ---------- start ----------
@@ -380,4 +390,7 @@ async function load(): Promise<void> {
   dragThumb.src = thumbnail();
 }
 
-load().catch((e) => flash(String(e)));
+load().catch((e) => {
+  logError("load", e);
+  flash(String(e));
+});

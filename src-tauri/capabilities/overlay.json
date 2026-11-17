@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "overlay",
-  "description": "Area-capture overlay windows on Windows (label overlay-<n>-<monitor>, created in screenshot.rs). They only call the screenshot_overlay_* app commands, which need no plugin permission, so none are granted.",
+  "description": "Area-capture overlay windows on Windows (label overlay-<n>-<monitor>, created in screenshot.rs). They only call app commands (screenshot_overlay_*, app_log); app commands are not ACL-checked while the app defines no app manifest (build.rs), so no permission is granted.",
   "windows": ["overlay-*"],
   "permissions": []
 }

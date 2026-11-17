@@ -54,7 +54,7 @@ fn hash(text: &str) -> u64 {
 
 fn open_db(app: &AppHandle) -> Connection {
     let conn = crate::db::open(app, "clipboard.db").unwrap_or_else(|e| {
-        eprintln!("clipboard: cannot open clipboard.db ({e}); history is kept in memory only");
+        crate::applog::error(&format!("clipboard: cannot open clipboard.db ({e}); history is kept in memory only"));
         Connection::open_in_memory().expect("in-memory SQLite")
     });
     let setup = conn.execute_batch(
@@ -71,7 +71,7 @@ fn open_db(app: &AppHandle) -> Connection {
          );",
     );
     if let Err(e) = setup {
-        eprintln!("clipboard: cannot create tables: {e}");
+        crate::applog::error(&format!("clipboard: cannot create tables: {e}"));
     }
     conn
 }
