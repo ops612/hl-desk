@@ -372,7 +372,8 @@ fn clipboard_set_keep_hours(state: State<'_, Clipboard>, hours: i64) -> Result<V
                 Ok(Item { id: r.get(0)?, text: r.get(1)?, created_at: r.get(2)?, pinned: r.get(3)? })
             })
             .map_err(err)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(err)?
+        let removed = rows.collect::<Result<Vec<_>, _>>().map_err(err)?;
+        removed
     };
     tx.execute("DELETE FROM items WHERE pinned = 0 AND created_at < ?1", params![cutoff])
         .map_err(err)?;
