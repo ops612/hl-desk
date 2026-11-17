@@ -3,6 +3,7 @@
 // Esc or right-click cancels.
 import "@fontsource/ibm-plex-sans/500.css";
 import { invoke } from "@tauri-apps/api/core";
+import { pngUrl } from "../png-url";
 import "./overlay.css";
 
 type Rect = { x: number; y: number; w: number; h: number };
@@ -144,13 +145,13 @@ document.addEventListener("keydown", (e) => {
 // Load the frozen screen, then ask Rust to show this window (it is created hidden, so no white
 // flash). Waits for the image's load event, not img.decode(): this page is still hidden here,
 // and decode() is not guaranteed to settle for a page that is not visible.
-invoke<ArrayBuffer>("screenshot_overlay_image", { index: monitor })
+invoke<unknown>("screenshot_overlay_image", { index: monitor })
   .then(
     (bytes) =>
       new Promise<void>((resolve, reject) => {
         shot.onload = () => resolve();
         shot.onerror = () => reject(new Error("the frozen screen image did not load"));
-        shot.src = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
+        shot.src = pngUrl(bytes);
       }),
   )
   .then(() => invoke("screenshot_overlay_show"))

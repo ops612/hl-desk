@@ -1,6 +1,7 @@
 // Screenshot feature. Called once, the first time the Screenshot tab is shown.
 // Rust side: src-tauri/src/screenshot.rs. Editor window: editor.html + src/editor/.
 import { invoke } from "@tauri-apps/api/core";
+import { pngUrl } from "../../png-url";
 import { listen } from "@tauri-apps/api/event";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
 import "./screenshot.css";
@@ -80,8 +81,8 @@ const key = (s: Shot) => `${s.id}:${s.updatedAt}`;
 async function thumbUrl(shot: Shot): Promise<string> {
   let url = urls.get(key(shot));
   if (!url) {
-    const bytes = await invoke<ArrayBuffer>("screenshot_read", { id: shot.id });
-    url = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
+    const bytes = await invoke<unknown>("screenshot_read", { id: shot.id });
+    url = pngUrl(bytes);
     urls.set(key(shot), url);
   }
   return url;

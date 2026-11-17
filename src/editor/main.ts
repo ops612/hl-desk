@@ -1,6 +1,7 @@
 // Screenshot editor window (editor.html?id=<capture id>), opened by src-tauri/src/screenshot.rs.
 // The edits are a list of operations drawn over the original image, so undo is "drop the last one".
 import { invoke } from "@tauri-apps/api/core";
+import { pngUrl } from "../png-url";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
 import "./editor.css";
@@ -381,8 +382,8 @@ void getCurrentWindow().onCloseRequested(async () => {
 async function load(): Promise<void> {
   const shot = await invoke<{ path: string }>("screenshot_get", { id });
   path = shot.path;
-  const bytes = await invoke<ArrayBuffer>("screenshot_read", { id });
-  image.src = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
+  const bytes = await invoke<unknown>("screenshot_read", { id });
+  image.src = pngUrl(bytes);
   await image.decode();
   setColor(color);
   setTool("number");
