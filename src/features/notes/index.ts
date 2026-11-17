@@ -36,6 +36,20 @@ const api = {
   remove: (id: number) => invoke<void>("notes_delete", { id }),
 };
 
+/** "Today 4:25 pm", "Yesterday", "12 Nov" (with the year when it is not this year). */
+function editedLabel(ms: number, now = new Date()): string {
+  const d = new Date(ms);
+  const day = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.round((day(now) - day(d)) / 86_400_000);
+  if (days === 0) {
+    const h = d.getHours();
+    return `Today ${h % 12 || 12}:${String(d.getMinutes()).padStart(2, "0")} ${h < 12 ? "am" : "pm"}`;
+  }
+  if (days === 1) return "Yesterday";
+  const month = d.toLocaleString("en-GB", { month: "short" });
+  return `${d.getDate()} ${month}${d.getFullYear() === now.getFullYear() ? "" : ` ${d.getFullYear()}`}`;
+}
+
 const ICON_BACK =
   '<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3L5 8l5 5"/></svg>';
 const ICON_TRASH =
@@ -104,6 +118,10 @@ export function mount(el: HTMLElement): void {
       rowsEl.innerHTML = "";
       rowsEl.append(emptyState("Could not load notes", String(e)));
     }
+    renderCount();
+  }
+
+  function renderCount(): void {
     countEl.textContent = `Saved automatically · ${total} ${total === 1 ? "note" : "notes"}`;
   }
 
@@ -137,13 +155,19 @@ export function mount(el: HTMLElement): void {
       row.setAttribute("role", "option");
       row.setAttribute("aria-selected", String(i === selected));
       row.tabIndex = -1;
+      const line = document.createElement("span");
+      line.className = "notes-line";
       const title = document.createElement("span");
       title.className = "notes-title";
       title.textContent = note.title || "New note";
+      const date = document.createElement("span");
+      date.className = "notes-date";
+      date.textContent = editedLabel(note.updatedAt);
+      line.append(title, date);
       const preview = document.createElement("span");
       preview.className = "notes-preview";
       preview.textContent = note.preview || "No more text";
-      row.append(title, preview);
+      row.append(line, preview);
       row.addEventListener("click", () => void openNote(note.id));
       rowsEl.append(row);
     });
@@ -232,6 +256,9 @@ export function mount(el: HTMLElement): void {
         if (d.id === null) {
           if (!body.trim()) return;
           d.id = (await api.create()).id;
+          // The footer count includes the new note from its first character.
+          total += 1;
+          renderCount();
         }
         await api.save(d.id, body);
         if (d.body === body) d.dirty = false;
@@ -266,7 +293,9 @@ export function mount(el: HTMLElement): void {
     draft.body = textarea.value;
     draft.dirty = true;
     clearTimeout(saveTimer);
-    saveTimer = window.setTimeout(() => void save(), AUTOSAVE_MS);
+    // A new note is created on its first character (so it counts at once); then autosave.
+    if (draft.id === null && draft.body.trim()) void save();
+    else saveTimer = window.setTimeout(() => void save(), AUTOSAVE_MS);
   });
   $(".notes-back").addEventListener("click", () => void backToList());
   $(".notes-trash").addEventListener("click", () => void deleteDraft());

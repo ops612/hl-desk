@@ -6,7 +6,7 @@ mod screenshot;
 mod settings;
 
 use std::{
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -33,6 +33,20 @@ static BLUR_HIDDEN_AT: AtomicU64 = AtomicU64::new(0);
 /// Windows may refuse the focus to a window opened at start-up (first run, welcome card), and
 /// hiding it then would mean the user never sees it.
 static SHOWN_AT: AtomicU64 = AtomicU64::new(0);
+/// The header's pin button: while pinned the main window stays on top and does not hide on
+/// blur (Esc and the tray icon still hide it). main.ts remembers the choice and sets it at start.
+static PINNED: AtomicBool = AtomicBool::new(false);
+
+#[tauri::command]
+fn shell_set_pinned(app: AppHandle, pinned: bool) -> Result<(), String> {
+    PINNED.store(pinned, Ordering::SeqCst);
+    let window = app.get_webview_window("main").ok_or("no main window")?;
+    window.set_always_on_top(pinned).map_err(|e| e.to_string())
+}
+
+fn shell_handlers() -> impl Fn(Invoke) -> bool + Send + Sync + 'static {
+    tauri::generate_handler![shell_set_pinned]
+}
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -124,6 +138,7 @@ pub fn run() {
     let notes_commands = notes::commands();
     let settings_commands = settings::commands();
     let app_commands = applog::commands();
+    let shell_commands = shell_handlers();
 
     tauri::Builder::default()
         // Must be the first plugin. A second launch only wakes this one: it shows the window,
@@ -168,6 +183,8 @@ pub fn run() {
                 notes_commands(invoke)
             } else if command.starts_with("settings_") {
                 settings_commands(invoke)
+            } else if command.starts_with("shell_") {
+                shell_commands(invoke)
             } else {
                 false
             }
@@ -258,9 +275,10 @@ pub fn run() {
                 }
                 // Like a tray popover: a click anywhere else closes it. A capture hides the
                 // window before it starts, and the shortcuts sheet is part of this window, so
-                // neither is affected.
+                // neither is affected. Pinned (header pin button): it stays open.
                 WindowEvent::Focused(false)
-                    if window.is_visible().unwrap_or(false)
+                    if !PINNED.load(Ordering::SeqCst)
+                        && window.is_visible().unwrap_or(false)
                         && now_ms().saturating_sub(SHOWN_AT.load(Ordering::SeqCst)) > 1500 =>
                 {
                     BLUR_HIDDEN_AT.store(now_ms(), Ordering::SeqCst);
