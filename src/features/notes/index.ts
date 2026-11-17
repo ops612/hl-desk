@@ -52,7 +52,7 @@ export function mount(el: HTMLElement): void {
       </div>
       <div class="scroll" id="notes-rows" role="listbox" aria-label="Notes"></div>
       <div class="undo-bar" role="status" hidden>
-        <span>Note deleted</span><span aria-hidden="true">·</span>
+        <span>Note deleted</span>
         <button type="button">Undo</button>
       </div>
     </div>

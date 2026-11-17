@@ -34,7 +34,7 @@ export function mount(el: HTMLElement): void {
     <div class="toolbar"><input class="field" type="search" placeholder="Search clipboard" aria-label="Search clipboard" spellcheck="false" /></div>
     <ul class="scroll cb-list" role="listbox" aria-label="Clipboard history"></ul>
     <div class="undo-bar" role="status" hidden>
-      <span>Item deleted</span><span aria-hidden="true">·</span>
+      <span>Item deleted</span>
       <button type="button">Undo</button>
     </div>
     <footer class="footer">

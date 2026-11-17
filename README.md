@@ -77,7 +77,7 @@ Shared files (change only in a separate, reviewed PR): `src/main.ts` (tabs), `sr
     `aria-selected="true"` is the keyboard-selected row.
   - `.hint`: 11px muted text. `.empty`: centred empty-state message.
   - `.footer`: the bottom hint line of a panel (11px, grey band, full width, pushed to the bottom).
-  - `.undo-bar`: the dark "Item deleted · Undo" bar above the footer (5 s, then the delete happens).
+  - `.undo-bar`: the dark "Item deleted ... Undo" bar above the footer (5 s, then the delete happens).
   - `.keycap`: one key of a shortcut. `.switch`: an on/off `input type="checkbox" role="switch"`.
   - Layout: a panel is a column of `.toolbar`, `.scroll`, `.footer`. Never use negative margins to
     reach the window edge; the toolbar and scroll do the insetting.

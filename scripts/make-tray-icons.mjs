@@ -5,6 +5,9 @@
 // Windows: indigo #2F4CC8 rounded square with a white "HL", tray-<px>.png and tray.ico.
 // macOS: template image (black + alpha): a rounded square with "HL" cut out, 18pt at 1x and 2x
 // (tray-mac.png, tray-mac@2x.png); lib.rs sets icon_as_template(true).
+// App icon source: src-tauri/icons/app-icon.png (1024 px, the same mark with the usual margin);
+// then `npx tauri icon src-tauri/icons/app-icon.png -o <temp>` and copy the files listed in
+// tauri.conf.json (bundle.icon) plus 64x64.png into src-tauri/icons/.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,7 +15,9 @@ import { deflateSync } from "node:zlib";
 
 const OUT = join(dirname(fileURLToPath(import.meta.url)), "..", "src-tauri", "icons", "tray");
 const INDIGO = [0x2f, 0x4c, 0xc8];
-const SAMPLES = 16;
+const SAMPLES_SMALL = 16;
+/** Fewer samples for the 1024 px app icon (16 x 16 per pixel would take minutes). */
+const SAMPLES_LARGE = 4;
 
 // The design on a 16-unit grid: strokes 2 units wide, "HL" 12 x 8 units, centred.
 const LETTERS = [
@@ -33,7 +38,7 @@ function inRounded(x, y, x0, y0, x1, y1, r) {
 }
 
 /** Renders size x size RGBA. paint(u, v) gets design units and returns [r, g, b, a] or null. */
-function render(size, units, paint) {
+function render(size, units, paint, SAMPLES = size > 128 ? SAMPLES_LARGE : SAMPLES_SMALL) {
   const px = new Uint8Array(size * size * 4);
   const scale = units / size;
   for (let y = 0; y < size; y++) {
@@ -66,6 +71,12 @@ const windowsPaint = (u, v) => {
 const macPaint = (u, v) => {
   if (!inRounded(u, v, 1, 1, 17, 17, RADIUS)) return null;
   return LETTERS.some((r) => inRect(u - 1, v - 1, r)) ? null : [0, 0, 0, 255];
+};
+
+// App icon: the same mark on a 20-unit grid, square inset 2 units (like macOS app icons).
+const appPaint = (u, v) => {
+  if (!inRounded(u, v, 2, 2, 18, 18, RADIUS)) return null;
+  return LETTERS.some((r) => inRect(u - 2, v - 2, r)) ? [255, 255, 255, 255] : [...INDIGO, 255];
 };
 
 // ---- PNG and ICO writers ----
@@ -128,4 +139,5 @@ for (const { size, data } of windows) writeFileSync(join(OUT, `tray-${size}.png`
 writeFileSync(join(OUT, "tray.ico"), ico(windows));
 writeFileSync(join(OUT, "tray-mac.png"), png(18, render(18, 18, macPaint)));
 writeFileSync(join(OUT, "tray-mac@2x.png"), png(36, render(36, 18, macPaint)));
+writeFileSync(join(OUT, "..", "app-icon.png"), png(1024, render(1024, 20, appPaint)));
 console.log(`Wrote ${windows.length} Windows sizes, tray.ico and the macOS template (18, 36 px) to ${OUT}`);
