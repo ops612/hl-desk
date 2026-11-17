@@ -102,6 +102,12 @@ enum Copied {
     Files(Vec<String>),
 }
 
+/// The clipboard plugin's image borrows the app handle; the watcher keeps its own copy.
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+fn owned(image: &Image<'_>) -> Image<'static> {
+    Image::new_owned(image.rgba().to_vec(), image.width(), image.height())
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Settings {
@@ -536,7 +542,7 @@ fn watch(app: AppHandle) {
             }
             if types.iter().any(|t| IMAGE_TYPES.contains(&t.as_str())) {
                 return match app.clipboard().read_image() {
-                    Ok(image) => Some(Copied::Image(image)),
+                    Ok(image) => Some(Copied::Image(owned(&image))),
                     Err(e) => {
                         applog::warn(&format!("clipboard: could not read the copied image: {e}"));
                         None
@@ -567,7 +573,8 @@ mod mac {
             .to_vec()
             .iter()
             .filter_map(|item| {
-                let url = NSURL::URLWithString(&item.stringForType(&file_type)?)?;
+                let url_string = item.stringForType(&file_type)?;
+                let url = NSURL::URLWithString(&url_string)?;
                 // Finder hands over file reference URLs (file:///.file/id=...): make them paths.
                 let url = url.filePathURL().unwrap_or(url);
                 url.path().map(|p| p.to_string())
@@ -645,7 +652,7 @@ fn watch(app: AppHandle) {
         } else if win::has_image() {
             last_seq = seq;
             match app.clipboard().read_image() {
-                Ok(image) => Copied::Image(image),
+                Ok(image) => Copied::Image(owned(&image)),
                 Err(e) => {
                     applog::warn(&format!("clipboard: could not read the copied image: {e}"));
                     continue;
