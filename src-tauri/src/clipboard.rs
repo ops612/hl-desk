@@ -357,6 +357,7 @@ fn store_keep_hours(conn: &Connection, hours: i64) -> rusqlite::Result<usize> {
 fn clipboard_set_keep_hours(state: State<'_, Clipboard>, hours: i64) -> Result<Vec<Item>, String> {
     check_hours(hours)?;
     let conn = state.db.lock().unwrap();
+    let before = keep_hours(&conn);
     let tx = conn.unchecked_transaction().map_err(err)?;
     store_keep_hours(&tx, hours).map_err(err)?;
     let cutoff = now() - hours * 3600;
@@ -378,26 +379,54 @@ fn clipboard_set_keep_hours(state: State<'_, Clipboard>, hours: i64) -> Result<V
     tx.execute("DELETE FROM items WHERE pinned = 0 AND created_at < ?1", params![cutoff])
         .map_err(err)?;
     tx.commit().map_err(err)?;
+    crate::applog::info(&format!(
+        "clipboard: keep changed from {before} to {hours} hours, {} older item(s) removed",
+        removed.len()
+    ));
     Ok(removed)
 }
 
 /// Undo for clipboard_set_keep_hours: puts the old keep time back first (so the minute cleanup
-/// cannot remove the items again), then the removed items, as unpinned rows with new ids.
+/// cannot remove the items again), then the removed items with their own id, time and pin
+/// (a new id only if a newer copy has taken that id since).
 #[tauri::command]
 fn clipboard_undo_keep(state: State<'_, Clipboard>, hours: i64, items: Vec<Item>) -> Result<(), String> {
+    let result = undo_keep(&state, hours, &items);
+    match &result {
+        Ok(restored) => crate::applog::info(&format!(
+            "clipboard: keep undo: back to {hours} hours, {restored} of {} item(s) restored",
+            items.len()
+        )),
+        Err(e) => crate::applog::error(&format!("clipboard: keep undo failed: {e}")),
+    }
+    result.map(|_| ())
+}
+
+/// Returns how many items were put back.
+fn undo_keep(state: &Clipboard, hours: i64, items: &[Item]) -> Result<usize, String> {
     check_hours(hours)?;
     let conn = state.db.lock().unwrap();
     let tx = conn.unchecked_transaction().map_err(err)?;
     store_keep_hours(&tx, hours).map_err(err)?;
+    let mut restored = 0;
     for item in items.iter().filter(|i| !i.text.trim().is_empty() && i.text.len() <= MAX_ITEM_BYTES) {
-        tx.execute(
-            "INSERT INTO items (text, created_at, pinned) VALUES (?1, ?2, 0)",
-            params![item.text, item.created_at],
-        )
-        .map_err(err)?;
+        let same_id = tx
+            .execute(
+                "INSERT OR IGNORE INTO items (id, text, created_at, pinned) VALUES (?1, ?2, ?3, ?4)",
+                params![item.id, item.text, item.created_at, item.pinned],
+            )
+            .map_err(err)?;
+        if same_id == 0 {
+            tx.execute(
+                "INSERT INTO items (text, created_at, pinned) VALUES (?1, ?2, ?3)",
+                params![item.text, item.created_at, item.pinned],
+            )
+            .map_err(err)?;
+        }
+        restored += 1;
     }
     tx.commit().map_err(err)?;
-    Ok(())
+    Ok(restored)
 }
 
 /// This feature's commands. Name each one "clipboard_<name>" (for example "clipboard_list")

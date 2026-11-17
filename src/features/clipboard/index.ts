@@ -178,9 +178,20 @@ export function mount(el: HTMLElement): void {
   async function offerUndo(text: string, commit: () => Promise<void>, revert: () => Promise<void>): Promise<void> {
     await commitUndo();
     undoText.textContent = text;
-    undo = { commit, revert, timer: window.setTimeout(() => void commitUndo().then(refresh), UNDO_MS) };
+    undo = { commit, revert, timer: undoTimer() };
     undoBar.hidden = false;
   }
+
+  const undoTimer = () => window.setTimeout(() => void commitUndo().then(refresh), UNDO_MS);
+  // The bar stays while the pointer is on it, so a slow click on Undo still lands.
+  undoBar.addEventListener("pointerenter", () => {
+    if (undo) clearTimeout(undo.timer);
+  });
+  undoBar.addEventListener("pointerleave", () => {
+    if (!undo) return;
+    clearTimeout(undo.timer);
+    undo.timer = undoTimer();
+  });
 
   undoBar.querySelector("button")!.addEventListener("click", async () => {
     const u = undo;
@@ -188,7 +199,9 @@ export function mount(el: HTMLElement): void {
     clearTimeout(u.timer);
     undo = null;
     undoBar.hidden = true;
-    await u.revert().catch(() => {});
+    await u.revert().catch((e) => {
+      void invoke("app_log", { level: "error", message: `clipboard: undo failed: ${String(e)}` }).catch(() => {});
+    });
     void refresh();
     search.focus();
   });

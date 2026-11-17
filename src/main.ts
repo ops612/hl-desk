@@ -8,6 +8,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import * as clipboard from "./features/clipboard";
 import * as notes from "./features/notes";
 import * as screenshot from "./features/screenshot";
+import { mountPermission } from "./features/screenshot/permission";
 import { mountCaptureSettings } from "./features/screenshot/settings";
 
 // Each feature owns its folder and exports mount(el). A tab mounts its feature the first time it is shown.
@@ -156,16 +157,12 @@ document.getElementById("welcome-list")!.innerHTML = welcomeItems
     <span class="welcome-keys">${keycaps(keys)}</span></li>`)
   .join("");
 
+// Screen Recording is a macOS permission: the same card as on the Screenshot tab, gone once allowed.
+const welcomePerm = mountPermission(document.getElementById("welcome-perm")!);
+
 function showWelcome(): void {
   welcome.hidden = false;
-  // Screen Recording is a macOS permission; the row goes once it is allowed.
-  const perm = document.getElementById("welcome-perm")!;
-  perm.hidden = !isMac;
-  if (isMac) {
-    invoke<boolean>("screenshot_permission")
-      .then((granted) => (perm.hidden = granted))
-      .catch(() => {});
-  }
+  if (isMac) welcomePerm.check();
   document.getElementById("welcome-try")!.focus();
 }
 
@@ -182,9 +179,6 @@ document.getElementById("welcome-try")!.addEventListener("click", () => {
   closeWelcome();
   show("screenshot");
   invoke("screenshot_capture").catch(() => {});
-});
-document.getElementById("welcome-perm-open")!.addEventListener("click", () => {
-  invoke("screenshot_open_permission_settings").catch(() => {});
 });
 document.getElementById("welcome-again")!.addEventListener("click", () => {
   invoke("settings_set_welcome_seen", { seen: false }).catch(() => {});

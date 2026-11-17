@@ -1,10 +1,10 @@
 // Screenshot feature. Called once, the first time the Screenshot tab is shown.
 // Rust side: src-tauri/src/screenshot.rs. Editor window: editor.html + src/editor/.
-import { exit } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { pngUrl } from "../../png-url";
 import { listen } from "@tauri-apps/api/event";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
+import { mountPermission } from "./permission";
 import "./screenshot.css";
 
 type Shot = { id: number; path: string; createdAt: number; updatedAt: number };
@@ -25,14 +25,7 @@ export function mount(el: HTMLElement): void {
       <button class="btn-primary shot-capture" type="button">Capture area</button>
       <p class="hint shot-hint">or press <span class="shot-keys">${keys}</span></p>
     </div>
-    <div class="shot-perm" role="alert" hidden>
-      <strong>Allow screen recording</strong>
-      <p class="hint">macOS needs your OK before HL Desk can capture other windows; without it a capture shows only your wallpaper. Turn on HL Desk in Privacy &amp; Security → Screen Recording, then quit and reopen HL Desk.</p>
-      <div class="shot-perm-actions">
-        <button class="btn shot-perm-open" type="button">Open System Settings</button>
-        <button class="btn shot-perm-quit" type="button">Quit HL Desk</button>
-      </div>
-    </div>
+    <div class="shot-perm" role="alert" hidden></div>
     <p class="shot-error" role="alert" hidden></p>
     <div class="scroll">
       <div class="hint shot-label" hidden>Recent</div>
@@ -54,22 +47,14 @@ export function mount(el: HTMLElement): void {
     invoke("screenshot_capture").catch(showError);
   });
 
-  // macOS Screen Recording: the card shows while it is not allowed (only macOS asks), and when a
-  // capture stopped because of it (Rust checks before each capture and sends this event).
-  if (isMac) {
-    invoke<boolean>("screenshot_permission")
-      .then((granted) => (perm.hidden = granted))
-      .catch(() => {});
-  }
+  // macOS Screen Recording (permission.ts): the card shows while it is not allowed or needs a
+  // restart (only macOS asks), and when a capture stopped because of it (Rust checks before each
+  // capture and sends this event).
+  const permission = mountPermission(perm);
+  if (isMac) permission.check();
   void listen("screenshot-permission", () => {
     error.hidden = true;
-    perm.hidden = false;
-  });
-  el.querySelector(".shot-perm-open")!.addEventListener("click", () => {
-    invoke("screenshot_open_permission_settings").catch(showError);
-  });
-  el.querySelector(".shot-perm-quit")!.addEventListener("click", () => {
-    exit(0).catch(() => {});
+    permission.check();
   });
 
   // A failed capture (Rust shows this window and sends the message). One sent before this tab

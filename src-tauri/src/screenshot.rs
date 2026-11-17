@@ -98,6 +98,8 @@ fn png_bytes(rgba: &[u8], width: u32, height: u32) -> Res<Vec<u8>> {
 
 /// Called once at start-up, after the plugins are ready.
 pub fn init(app: &AppHandle) {
+    #[cfg(target_os = "macos")]
+    permission::init();
     if let Err(e) = cleanup(app) {
         applog::error(&format!("screenshot: clean-up failed: {e}"));
     }
@@ -273,7 +275,34 @@ mod permission {
     /// Asks for it: the first time, macOS shows its prompt and adds HL Desk to the list in
     /// System Settings. Returns true only if it is allowed already.
     pub fn request() -> bool {
+        ASKED.store(true, Ordering::SeqCst);
         unsafe { CGRequestScreenCaptureAccess() }
+    }
+
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// Allowed when this run started. Allowed only later means macOS's own "Quit & Reopen" was
+    /// skipped: the card then offers "Restart HL Desk".
+    static AT_START: AtomicBool = AtomicBool::new(false);
+    /// request() was called in this run (it lists HL Desk in System Settings).
+    static ASKED: AtomicBool = AtomicBool::new(false);
+
+    /// Called once at start-up.
+    pub fn init() {
+        AT_START.store(granted(), Ordering::SeqCst);
+    }
+
+    /// "granted", "restart" (allowed after this run started) or "denied". Still denied when the
+    /// user comes back: ask once more per app start, so HL Desk is surely in the list.
+    pub fn status() -> &'static str {
+        if granted() {
+            return if AT_START.load(Ordering::SeqCst) { "granted" } else { "restart" };
+        }
+        if !ASKED.load(Ordering::SeqCst) {
+            let allowed = request();
+            crate::applog::info(&format!("permission: asked again (this run's first request), returned {allowed}"));
+        }
+        "denied"
     }
 }
 
@@ -739,17 +768,29 @@ fn screenshot_last_error() -> Option<String> {
     LAST_ERROR.lock().unwrap_or_else(|e| e.into_inner()).take()
 }
 
-/// Whether screen capture is allowed (only macOS asks; true elsewhere).
+/// Screen capture permission: "granted", "restart" (macOS: allowed after HL Desk started, so it
+/// must restart first) or "denied" (macOS; asks once more per app start). Always "granted"
+/// elsewhere (only macOS asks).
 #[tauri::command]
-fn screenshot_permission() -> bool {
+fn screenshot_permission_status() -> &'static str {
     #[cfg(target_os = "macos")]
     {
-        permission::granted()
+        let status = permission::status();
+        applog::info(&format!("permission: screen recording {status}"));
+        status
     }
     #[cfg(not(target_os = "macos"))]
     {
-        true
+        "granted"
     }
+}
+
+/// macOS "One more step": restarts HL Desk, so a screen recording grant made after it started
+/// takes effect (macOS's own "Quit & Reopen" was skipped).
+#[tauri::command]
+fn screenshot_restart(app: AppHandle) {
+    applog::info("permission: restarting HL Desk so screen recording applies");
+    app.request_restart();
 }
 
 /// macOS: asks for screen recording (adds HL Desk to the list the first time) and opens
@@ -991,6 +1032,12 @@ async fn screenshot_toast_markup(app: AppHandle, window: WebviewWindow) -> Res<(
     })
 }
 
+/// Toast page: it has drawn, so show the window (on top, without taking the focus).
+#[tauri::command]
+fn screenshot_toast_show(window: WebviewWindow) {
+    toast::ready(&window);
+}
+
 /// Toast page: closed (its x, or its timer ran out).
 #[tauri::command]
 fn screenshot_toast_close(window: WebviewWindow) {
@@ -1003,7 +1050,8 @@ pub fn commands() -> impl Fn(Invoke) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
         screenshot_capture,
         screenshot_last_error,
-        screenshot_permission,
+        screenshot_permission_status,
+        screenshot_restart,
         screenshot_open_permission_settings,
         screenshot_overlay_image,
         screenshot_overlay_show,
@@ -1022,6 +1070,7 @@ pub fn commands() -> impl Fn(Invoke) -> bool + Send + Sync + 'static {
         screenshot_open_key_settings,
         screenshot_toast_image,
         screenshot_toast_markup,
+        screenshot_toast_show,
         screenshot_toast_close
     ]
 }

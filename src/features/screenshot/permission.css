@@ -1,0 +1,15 @@
+/* macOS Screen Recording card (permission.ts), on the Screenshot tab and in the welcome. */
+.perm-card {
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--bg); font-size: 12px;
+}
+.perm-art { display: block; width: 100%; max-width: 232px; height: auto; margin: 0 auto 8px; }
+.perm-card strong { display: block; font-weight: 500; }
+.perm-card .hint { margin: 2px 0 8px; line-height: 1.45; }
+.perm-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.perm-actions .btn, .perm-actions .btn-primary { height: 26px; padding: 0 10px; border-radius: var(--radius-sm); font-size: 11px; }
+.perm-card .perm-done { margin: 8px 0 0; }
+.perm-link {
+  padding: 0; border: 0; background: none; color: var(--indigo); font-size: inherit; cursor: pointer;
+  text-decoration: underline;
+}

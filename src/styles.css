@@ -190,13 +190,9 @@ label.setting { cursor: pointer; }
   border-radius: var(--radius-sm); background: var(--indigo-tint); color: var(--indigo);
 }
 .welcome-text { flex: 1; min-width: 0; font-size: 12px; }
-.welcome-text strong, .welcome-perm strong { display: block; font-weight: 500; }
-.welcome-text .hint, .welcome-perm .hint { margin: 1px 0 0; }
+.welcome-text strong { display: block; font-weight: 500; }
+.welcome-text .hint { margin: 1px 0 0; }
 .welcome-keys { flex: none; white-space: nowrap; }
-.welcome-perm {
-  display: flex; align-items: center; gap: 10px; margin-top: 10px; padding: 10px 12px;
-  border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); font-size: 12px;
-}
-.welcome-perm > div { flex: 1; min-width: 0; }
-.welcome-perm .btn { flex: none; height: 26px; padding: 0 10px; border-radius: var(--radius-sm); font-size: 11px; }
+/* The Screen Recording card (src/features/screenshot/permission.css draws it). */
+.welcome-perm { margin-top: 10px; }
 .welcome-actions { display: flex; gap: 6px; }

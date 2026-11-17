@@ -27,9 +27,11 @@ const loupeCanvas = document.getElementById("loupe-canvas") as HTMLCanvasElement
 const loupeText = document.getElementById("loupe-text")!;
 const loupeCtx = loupeCanvas.getContext("2d")!;
 
-/** Magnifier: LOUPE_PX x LOUPE_PX image pixels shown in a LOUPE_CSS-point square. */
-const LOUPE_PX = 15;
-const LOUPE_CSS = 120;
+/** Magnifier: LOUPE_PX x LOUPE_PX image pixels shown in a LOUPE_CSS-point square (6x). Over a
+ * flat area (a plain wallpaper) every pixel is the same colour, so guide lines through the centre
+ * row and column show that it is a magnifier and where the pointer is. */
+const LOUPE_PX = 21;
+const LOUPE_CSS = 126;
 loupeCanvas.width = LOUPE_CSS * devicePixelRatio;
 loupeCanvas.height = LOUPE_CSS * devicePixelRatio;
 
@@ -123,6 +125,10 @@ function drawPointer(): void {
   loupeCtx.fillStyle = "#0b1220";
   loupeCtx.fillRect(0, 0, size, size);
   loupeCtx.drawImage(shot, px - half, py - half, LOUPE_PX, LOUPE_PX, 0, 0, size, size);
+  // Guide lines: the centre row and column, lightly tinted.
+  loupeCtx.fillStyle = "rgb(47 76 200 / 22%)";
+  loupeCtx.fillRect(0, half * cell, size, cell);
+  loupeCtx.fillRect(half * cell, 0, cell, size);
   // The pixel under the pointer.
   loupeCtx.lineWidth = Math.max(1, devicePixelRatio);
   loupeCtx.strokeStyle = "#0b1220";

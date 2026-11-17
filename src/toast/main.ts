@@ -1,7 +1,8 @@
 // Corner toast (toast.html?kind=...), opened by src-tauri/src/screenshot/toast.rs. It never
-// takes the keyboard. Kinds:
+// takes the keyboard. The window starts hidden on Windows: once the page is set up it calls
+// screenshot_toast_show, and Rust shows it without taking the focus. Kinds:
 // - cancelled: "Capture cancelled" for about 2 s.
-// - shot: a device screenshot (Win+Shift+S, Cmd+Shift+4) with "Mark up in HL Desk", about 6 s;
+// - shot: a device screenshot (Win+Shift+S, Cmd+Shift+4) with "Mark up in HL Desk", about 8 s;
 //   the timer pauses while the pointer is over it.
 import "@fontsource/ibm-plex-sans/400.css";
 import "@fontsource/ibm-plex-sans/500.css";
@@ -16,6 +17,11 @@ const NOTICES: Record<string, string> = { cancelled: "Capture cancelled" };
 function log(level: "info" | "error", message: string): void {
   void invoke("app_log", { level, message: `toast: ${message}` }).catch(() => {});
 }
+
+const describe = (e: unknown) => (e instanceof Error ? e.message : String(e));
+window.addEventListener("error", (e) => log("error", `script error (${kind}): ${describe(e.error ?? e.message)}`));
+window.addEventListener("unhandledrejection", (e) => log("error", `unhandled promise (${kind}): ${describe(e.reason)}`));
+log("info", `page loaded (${kind})`);
 
 let closing = false;
 function close(): void {
@@ -53,7 +59,7 @@ if (kind === "shot") {
   invoke<unknown>("screenshot_toast_image")
     .then((bytes) => (img.src = pngUrl(bytes)))
     .catch((e) => log("error", `thumbnail: ${String(e)}`));
-  autoClose(6000);
+  autoClose(8000);
 } else {
   const notice = document.getElementById("notice")!;
   notice.textContent = NOTICES[kind] ?? kind;
@@ -64,3 +70,6 @@ if (kind === "shot") {
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") close();
 });
+
+// Set up: now Rust may show the window (it closes a toast that never reports, so none stays blank).
+invoke("screenshot_toast_show").catch((e) => log("error", `show: ${describe(e)}`));
