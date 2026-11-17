@@ -128,9 +128,12 @@ pub fn run() {
                 app.package_info().version,
                 std::env::args_os().skip(1).collect::<Vec<_>>()
             ));
+            // Another app may already own the shortcut: keep running (tray icon still opens
+            // HL Desk) and say so in the log, instead of quitting at launch.
             if let Err(e) = app.global_shortcut().register(toggle_shortcut()) {
-                applog::error(&format!("could not register the open shortcut: {e}"));
-                return Err(e.into());
+                applog::warn(&format!(
+                    "could not register the open shortcut (another app may use it): {e}"
+                ));
             }
 
             // Windows: a tray popover, so no maximize or minimize button and a fixed size
