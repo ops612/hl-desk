@@ -20,18 +20,19 @@ const macHint = isMac
 const urls = new Map<string, string>();
 
 export function mount(el: HTMLElement): void {
-  el.style.height = "100%";
   el.innerHTML = `
-    <div class="shot">
-      <div class="shot-top">
-        <button class="shot-capture" type="button">Capture area</button>
-        <span class="shot-hint">or press <kbd>${shortcut}</kbd></span>
-      </div>
-      <p class="shot-error" role="alert" hidden></p>
+    <div class="toolbar shot-top">
+      <button class="btn-primary shot-capture" type="button">Capture area</button>
+      <p class="hint shot-hint">or press <kbd>${shortcut}</kbd></p>
+    </div>
+    <p class="shot-error" role="alert" hidden></p>
+    <div class="scroll">
+      <div class="hint shot-label" hidden>Recent</div>
       <div class="shot-grid"></div>
-      <footer class="shot-foot">Drag a thumbnail to share · Kept 1 day</footer>
-    </div>`;
+    </div>
+    <footer class="footer"><span>Drag a thumbnail to share</span><span>Kept 1 day</span></footer>`;
   const grid = el.querySelector<HTMLElement>(".shot-grid")!;
+  const label = el.querySelector<HTMLElement>(".shot-label")!;
   const error = el.querySelector<HTMLElement>(".shot-error")!;
 
   const showError = (e: unknown) => {
@@ -52,14 +53,15 @@ export function mount(el: HTMLElement): void {
     .then((message) => message && showFailure(message))
     .catch(() => {});
 
-  const refresh = () => render(grid).catch(showError);
+  const refresh = () => render(grid, label).catch(showError);
   void listen("screenshot-changed", refresh);
   setInterval(refresh, 60_000); // keeps "time left" current
   void refresh();
 }
 
-async function render(grid: HTMLElement): Promise<void> {
+async function render(grid: HTMLElement, label: HTMLElement): Promise<void> {
   const shots = await invoke<Shot[]>("screenshot_list");
+  label.hidden = shots.length === 0;
   if (shots.length === 0) {
     grid.innerHTML = `<p class="shot-empty">No screenshots yet.<br />Press <kbd>${shortcut}</kbd> or Capture area, then drag over what you want.${macHint}</p>`;
   } else {

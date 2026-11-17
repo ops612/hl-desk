@@ -6,10 +6,10 @@
     <title>HL Desk</title>
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
-  <body>
-    <header class="app-header">
-      <span class="wordmark">HL DESK</span>
-      <button class="icon-btn" id="settings-open" type="button" aria-label="Shortcuts and settings"
+  <body class="popover">
+    <header class="app-header" data-tauri-drag-region>
+      <span class="wordmark" data-tauri-drag-region>HL DESK</span>
+      <button class="icon-btn" id="settings-open" type="button" aria-label="Settings"
         aria-haspopup="dialog" aria-expanded="false" aria-controls="settings">
         <!-- Gear icon from Feather (MIT). -->
         <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor"
@@ -33,16 +33,16 @@
     </main>
 
     <div class="sheet" id="settings" role="dialog" aria-modal="true" aria-labelledby="settings-title" hidden>
-      <div class="sheet-head">
-        <h2 id="settings-title">Shortcuts</h2>
+      <div class="sheet-head" data-tauri-drag-region>
+        <h2 id="settings-title" data-tauri-drag-region>Settings</h2>
         <button class="icon-btn" id="settings-close" type="button" aria-label="Close">
           <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" fill="none" stroke="currentColor"
             stroke-width="1.5" stroke-linecap="round"><path d="M3 3l8 8M11 3l-8 8" /></svg>
         </button>
       </div>
       <dl class="shortcuts" id="shortcuts"></dl>
-      <div class="sheet-foot">
-        <span class="hint" id="app-version">HL Desk</span>
+      <div class="footer">
+        <span id="app-version">HL Desk</span>
         <button class="btn" id="quit" type="button">Quit HL Desk</button>
       </div>
     </div>

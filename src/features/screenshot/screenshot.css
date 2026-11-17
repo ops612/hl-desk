@@ -1,46 +1,25 @@
-/* Screenshot tab. Tokens from docs/ui.md. Every rule is scoped to .shot so other tabs are untouched. */
-.shot {
-  --ink: #0b1220;
-  --muted: #5b6474;
-  --border: #e3e6eb;
-  --bg-soft: #f5f6f8;
-  --indigo: #2f4cc8;
-  --indigo-hover: #1e3494;
-  display: flex; flex-direction: column; gap: 10px; height: 100%;
-  font-size: 13px;
+/* Screenshot only. Tokens and shared classes (.toolbar, .btn-primary, .scroll, .footer, .hint)
+   come from src/styles.css. */
+.toolbar.shot-top { flex-direction: column; align-items: stretch; gap: 6px; padding-bottom: 8px; }
+.btn-primary.shot-capture { width: 100%; height: 36px; }
+.shot-hint { margin: 0; text-align: center; }
+.shot-top kbd, .shot-empty kbd {
+  padding: 1px 5px; border: 1px solid var(--border); border-radius: 4px;
+  background: var(--bg); color: var(--ink); font-size: 11px;
 }
-.shot kbd {
-  font: inherit; font-size: 11px; padding: 1px 5px;
-  border: 1px solid var(--border); border-radius: 4px; background: var(--bg-soft); color: var(--ink);
-}
-.shot-top { display: flex; align-items: center; gap: 10px; }
-.shot-capture {
-  padding: 7px 14px; border: 0; border-radius: 10px;
-  background: var(--indigo); color: #fff; font: inherit; font-weight: 500; cursor: pointer;
-}
-.shot-capture:hover { background: var(--indigo-hover); }
-.shot-capture:focus-visible, .shot-card:focus-visible { outline: 2px solid var(--indigo); outline-offset: 2px; }
-.shot-hint { color: var(--muted); font-size: 11px; }
-.shot-error { margin: 0; color: #e5484d; font-size: 12px; }
+.shot-error { flex: none; margin: 0 var(--inset) 8px; color: var(--red); font-size: 12px; }
+.hint.shot-label { margin: 4px 0 6px; font-weight: 500; }
 
-.shot-grid {
-  flex: 1; overflow: auto; align-content: start;
-  display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px;
-}
+.shot-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
 .shot-card {
   position: relative; padding: 0; aspect-ratio: 4 / 3; overflow: hidden;
-  border: 1px solid var(--border); border-radius: 8px; background: var(--bg-soft); cursor: pointer;
+  border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); cursor: pointer;
 }
 .shot-card:hover { border-color: var(--indigo); }
+.shot-card:focus-visible { outline-offset: 2px; }
 .shot-card img { width: 100%; height: 100%; object-fit: contain; display: block; pointer-events: none; }
 .shot-left {
-  position: absolute; right: 6px; bottom: 6px; padding: 0 6px; border-radius: 8px;
-  background: rgba(255, 255, 255, 0.9); color: var(--muted); font-size: 11px;
+  position: absolute; right: 6px; bottom: 6px; padding: 0 6px; border-radius: var(--radius-sm);
+  background: rgb(255 255 255 / 90%); color: var(--muted); font-size: 11px;
 }
 .shot-empty { grid-column: 1 / -1; margin: 40px 0 0; color: var(--muted); text-align: center; line-height: 1.8; }
-
-.shot-foot {
-  margin: 0 -12px -12px; padding: 6px 12px;
-  border-top: 1px solid var(--border); background: var(--bg-soft);
-  color: var(--muted); font-size: 11px; text-align: center;
-}

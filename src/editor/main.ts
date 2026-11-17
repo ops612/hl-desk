@@ -4,6 +4,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { pngUrl } from "../png-url";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
+import "@fontsource/ibm-plex-sans/400.css";
+import "@fontsource/ibm-plex-sans/500.css";
+import "../styles.css";
 import "./editor.css";
 
 type Tool = "number" | "pen" | "crop";

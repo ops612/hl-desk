@@ -1,25 +1,6 @@
-/* Screenshot editor window. Tokens from docs/ui.md (light theme only in v1). */
-:root {
-  --ink: #0b1220;
-  --muted: #5b6474;
-  --border: #e3e6eb;
-  --bg: #f5f6f8;
-  --surface: #ffffff;
-  --indigo: #2f4cc8;
-  --indigo-hover: #1e3494;
-  --indigo-tint: #eef1fb;
-  color-scheme: light;
-  font: 13px/1.4 "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "PingFang TC", "Segoe UI", sans-serif;
-}
-* { box-sizing: border-box; }
-html, body { margin: 0; height: 100%; }
-body {
-  display: flex; flex-direction: column;
-  background: var(--surface); color: var(--ink);
-  user-select: none; -webkit-user-select: none;
-}
-button { font: inherit; color: inherit; cursor: pointer; }
-button:focus-visible { outline: 2px solid var(--indigo); outline-offset: 1px; }
+/* Screenshot editor window. Tokens, font and base rules come from src/styles.css (imported first). */
+body { user-select: none; -webkit-user-select: none; }
+button { cursor: pointer; }
 
 .bar {
   display: flex; align-items: center; gap: 10px;

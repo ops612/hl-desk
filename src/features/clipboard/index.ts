@@ -29,11 +29,11 @@ const isMac = navigator.userAgent.includes("Mac");
 
 export function mount(el: HTMLElement): void {
   el.innerHTML = `
-    <div class="cb-search"><input type="search" placeholder="Search clipboard" aria-label="Search clipboard" spellcheck="false" /></div>
-    <ul class="cb-list" role="listbox" aria-label="Clipboard history"></ul>
-    <footer class="cb-footer">
-      <span class="cb-hint">Click to copy</span>
-      <label class="cb-keep">Keep: <select aria-label="Keep items for"></select></label>
+    <div class="toolbar"><input class="field" type="search" placeholder="Search clipboard" aria-label="Search clipboard" spellcheck="false" /></div>
+    <ul class="scroll cb-list" role="listbox" aria-label="Clipboard history"></ul>
+    <footer class="footer">
+      <span>Click to copy · ${isMac ? "⌘P" : "Ctrl+P"} pin</span>
+      <label class="cb-keep">Keep <select class="select" aria-label="Keep items for"></select></label>
     </footer>`;
   const search = el.querySelector<HTMLInputElement>("input")!;
   const list = el.querySelector<HTMLUListElement>(".cb-list")!;
@@ -56,7 +56,7 @@ export function mount(el: HTMLElement): void {
     list.replaceChildren();
     if (items.length === 0) {
       const empty = document.createElement("li");
-      empty.className = "cb-empty";
+      empty.className = "empty";
       empty.textContent = search.value.trim()
         ? "Nothing matches your search."
         : "Copy some text and it shows up here.";
@@ -65,7 +65,7 @@ export function mount(el: HTMLElement): void {
     }
     items.forEach((item, i) => {
       const row = document.createElement("li");
-      row.className = "cb-row";
+      row.className = "row cb-row";
       row.setAttribute("role", "option");
       row.setAttribute("aria-selected", String(i === selected));
       row.title = item.text.length > 500 ? item.text.slice(0, 500) + "..." : item.text;
@@ -77,7 +77,8 @@ export function mount(el: HTMLElement): void {
       const actions = document.createElement("span");
       actions.className = "cb-actions";
       const pin = document.createElement("button");
-      pin.className = "cb-icon" + (item.pinned ? " cb-on" : "");
+      pin.type = "button";
+      pin.className = "icon-btn cb-icon" + (item.pinned ? " cb-on" : "");
       pin.title = item.pinned ? "Unpin" : `Pin (${isMac ? "Cmd" : "Ctrl"}+P)`;
       pin.innerHTML = PIN_ICON;
       pin.addEventListener("click", (e) => {
@@ -85,7 +86,8 @@ export function mount(el: HTMLElement): void {
         void togglePin(item);
       });
       const del = document.createElement("button");
-      del.className = "cb-icon";
+      del.type = "button";
+      del.className = "icon-btn cb-icon cb-del";
       del.title = "Delete";
       del.innerHTML = DELETE_ICON;
       del.addEventListener("click", (e) => {
