@@ -38,7 +38,7 @@ Approach: build once, use forever. Few dependencies, no server, no account, noth
 | 2 | [x] (built 2026-11-17, integrate branch; not yet tried on a Mac) Clipboard: watch copies, store, search, pin, auto-delete timer, setting for the time, skip concealed copies | 3-4 days | Copy 10 items, set 1 minute, all unpinned items gone after 1 minute |
 | 3 | [x] (built 2026-11-17, integrate branch; not yet tried on a Mac) Screenshot: capture area by shortcut, editor with number, pen, crop, undo, copy, save, drag-out | 5-7 days | Mark a capture with 1-2-3, crop it, drag it into WhatsApp |
 | 4 | [x] (built 2026-11-17, integrate branch; not yet tried on a Mac) Notes: list, editor, autosave, search | 1-2 days | Note survives quitting and reopening the app |
-| 5 | Install on the director's Mac, fix what he finds | 2-3 days | He uses all three features without help |
+| 5 | (installers ready 2026-11-17: v0.1.0 on ops612/hl-desk-releases; waiting on the director) Install on the director's Mac, fix what he finds | 2-3 days | He uses all three features without help |
 
 Total: about 2-3 weeks. Drag-out and screen capture are the riskiest parts, so step 3 starts with a small spike (a quick test build) for both.
 
@@ -68,3 +68,5 @@ Total: about 2-3 weeks. Drag-out and screen capture are the riskiest parts, so s
 - 2026-11-17: Built all three features the same day as parallel agents, merged on one branch. Code review fixes: the editor saves on Esc and on close; Delete in the clipboard search edits the search text; open captures are not cleaned up. Left for later: editor size on a second display, one shared SQLite connection for screenshots.
 - 2026-11-17: Windows version next. Area capture on Windows uses our own overlay (capture the screens with xcap, freeze them in a full-screen window, drag a rectangle) so it works like the Mac one; the Windows Snipping Tool route was rejected because it only puts the image on the clipboard. Clipboard skips copies that password managers mark as private on Windows too. Installer stays unsigned (one "Run anyway" at install). Tested on this Windows laptop.
 - 2026-11-17: Windows overlay is one window per monitor (not one window across the whole desktop), because one web view has a single pixel ratio and monitors can have different scale factors. The crop uses the frozen image's own pixel size, so it matches physical pixels at any scale. The Windows build now also runs on every push to main. The popover opens in the bottom-right corner above the taskbar on Windows.
+- 2026-11-17: Windows version merged (#2) after an end-to-end test on a Windows PC; the first Windows build failed because image bytes reached the page as a number array.
+- 2026-11-17: Downloads published: public repo ops612/hl-desk-releases with a GitHub Pages download page and fixed latest-release links; v0.1.0 released from main c8f4af3. Steps in docs/release.md.

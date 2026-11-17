@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HL Desk download</title>
+<meta name="description" content="HL Desk: clipboard history, screenshots with markup and quick notes, for Mac and Windows.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root { --ink:#0B1220; --muted:#5B6474; --border:#E3E6EB; --bg:#F5F6F8; --surface:#fff; --indigo:#2F4CC8; --indigo-hover:#1E3494; --tint:#EEF1FB; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.6 "IBM Plex Sans", -apple-system, "Segoe UI", sans-serif; }
+  main { max-width:640px; margin:0 auto; padding:56px 16px 40px; }
+  .wm { font-size:12px; letter-spacing:3px; font-weight:500; color:var(--muted); margin:0 0 28px; }
+  h1 { font-size:30px; font-weight:600; margin:0 0 8px; letter-spacing:-.3px; }
+  .lead { color:var(--muted); margin:0 0 28px; }
+  .features { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:0 0 32px; }
+  .feature { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:14px; }
+  .feature b { display:block; font-weight:500; margin-bottom:2px; }
+  .feature span { color:var(--muted); font-size:13px; line-height:1.45; display:block; }
+  .downloads { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .dl { display:flex; flex-direction:column; gap:4px; text-decoration:none; color:var(--ink); background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:18px; }
+  .dl:hover { border-color:var(--indigo); }
+  .dl .os { font-weight:600; font-size:16px; }
+  .dl .meta { color:var(--muted); font-size:13px; }
+  .dl.primary { background:var(--indigo); border-color:var(--indigo); color:#fff; }
+  .dl.primary .meta { color:#D5DCF7; }
+  .dl.primary:hover { background:var(--indigo-hover); }
+  .version { color:var(--muted); font-size:13px; margin:12px 0 36px; }
+  h2 { font-size:16px; font-weight:600; margin:0 0 10px; }
+  ol { margin:0 0 24px; padding-left:20px; }
+  li { margin:0 0 6px; }
+  kbd { font:12px "IBM Plex Sans", sans-serif; background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:1px 6px; }
+  .note { background:var(--tint); border-radius:10px; padding:12px 14px; font-size:13px; color:var(--ink); margin:0 0 24px; }
+  footer { color:var(--muted); font-size:12px; border-top:1px solid var(--border); padding-top:16px; margin-top:16px; }
+  @media (max-width:560px) { .features, .downloads { grid-template-columns:1fr; } h1 { font-size:26px; } main { padding-top:36px; } }
+</style>
+</head>
+<body>
+<main>
+  <p class="wm">HOBBYLAND × GROUP</p>
+  <h1>HL Desk</h1>
+  <p class="lead">Your copied text, screenshots and notes in one small app that lives in the menu bar or taskbar.</p>
+
+  <div class="features">
+    <div class="feature"><b>Clipboard</b><span>Everything you copy, searchable. Deletes itself after 1 day; you choose the time.</span></div>
+    <div class="feature"><b>Screenshot</b><span>Capture an area, add numbers or a pen, crop, then drag it into a chat.</span></div>
+    <div class="feature"><b>Notes</b><span>Quick notes that save as you type.</span></div>
+  </div>
+
+  <div class="downloads">
+    <a class="dl" id="mac" href="https://github.com/ops612/hl-desk-releases/releases/latest/download/HL-Desk-mac.dmg">
+      <span class="os">Download for Mac</span><span class="meta">macOS, Apple Silicon and Intel · .dmg</span>
+    </a>
+    <a class="dl" id="win" href="https://github.com/ops612/hl-desk-releases/releases/latest/download/HL-Desk-setup.exe">
+      <span class="os">Download for Windows</span><span class="meta">Windows 10 and 11 · .exe</span>
+    </a>
+  </div>
+  <p class="version" id="version">Latest version</p>
+
+  <section id="steps-mac">
+    <h2>Install on Mac</h2>
+    <ol>
+      <li>Open the downloaded file and drag <b>HL Desk</b> into <b>Applications</b>.</li>
+      <li>Open HL Desk. Its icon appears in the menu bar, top right.</li>
+      <li>Press <kbd>⌘ Shift Space</kbd> to open it, <kbd>⌘ Shift 2</kbd> to capture an area.</li>
+    </ol>
+    <p class="note">First screenshot: allow HL Desk in System Settings → Privacy &amp; Security → Screen Recording, then reopen HL Desk.</p>
+  </section>
+
+  <section id="steps-win">
+    <h2>Install on Windows</h2>
+    <ol>
+      <li>Open the downloaded file. If Windows says it protected your PC, click <b>More info</b> → <b>Run anyway</b>.</li>
+      <li>HL Desk starts in the taskbar corner, bottom right.</li>
+      <li>Press <kbd>Ctrl Shift Space</kbd> to open it, <kbd>Ctrl Shift 2</kbd> to capture an area.</li>
+    </ol>
+  </section>
+
+  <footer>Everything stays on your computer. Nothing is uploaded.</footer>
+</main>
+<script>
+  // Highlight the button for this computer and show its steps first.
+  var isWin = /Windows/.test(navigator.userAgent);
+  var mine = document.getElementById(isWin ? "win" : "mac");
+  mine.classList.add("primary");
+  if (isWin) document.querySelector("main").insertBefore(document.getElementById("steps-win"), document.getElementById("steps-mac"));
+  // Show the latest version number from GitHub (the page works without it).
+  fetch("https://api.github.com/repos/ops612/hl-desk-releases/releases/latest")
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (rel) {
+      if (rel && rel.tag_name) document.getElementById("version").textContent =
+        "Latest version " + rel.tag_name.replace(/^v/, "") + " · " + new Date(rel.published_at).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+    })
+    .catch(function () {});
+</script>
+</body>
+</html>
