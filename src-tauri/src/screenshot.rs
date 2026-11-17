@@ -35,6 +35,9 @@ const KEEP_MS: i64 = 24 * 60 * 60 * 1000;
 const CHANGED: &str = "screenshot-changed";
 /// Sent to every window when a capture fails (payload: the message).
 const FAILED: &str = "screenshot-error";
+/// Sent when a capture stopped because macOS has not allowed screen recording yet.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const PERMISSION: &str = "screenshot-permission";
 
 /// True while a capture is running, so a second shortcut press does nothing.
 static CAPTURING: AtomicBool = AtomicBool::new(false);
@@ -194,8 +197,49 @@ fn report_failure(app: &AppHandle, message: &str) {
     crate::show_main_window(app);
 }
 
+/// macOS Screen Recording permission (CoreGraphics, macOS 10.15+). Without it `screencapture`
+/// saves only the wallpaper, so a capture checks first.
+#[cfg(target_os = "macos")]
+mod permission {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGPreflightScreenCaptureAccess() -> bool;
+        fn CGRequestScreenCaptureAccess() -> bool;
+    }
+
+    /// True when screen recording is allowed (no prompt).
+    pub fn granted() -> bool {
+        unsafe { CGPreflightScreenCaptureAccess() }
+    }
+
+    /// Asks for it: the first time, macOS shows its prompt and adds HL Desk to the list in
+    /// System Settings. Returns true only if it is allowed already.
+    pub fn request() -> bool {
+        unsafe { CGRequestScreenCaptureAccess() }
+    }
+}
+
+/// System Settings > Privacy & Security > Screen Recording.
+#[cfg(target_os = "macos")]
+const SCREEN_RECORDING_PANE: &str =
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
+
 #[cfg(target_os = "macos")]
 fn capture(app: &AppHandle) -> Res<()> {
+    if permission::granted() {
+        applog::info("capture: screen recording allowed");
+    } else {
+        applog::info("capture: screen recording not allowed (preflight), asking");
+        let allowed = permission::request();
+        applog::info(&format!("capture: request returned {allowed}"));
+        if !allowed {
+            // Do not capture a wallpaper-only image: show the permission card instead.
+            let _ = app.emit(PERMISSION, ());
+            crate::show_main_window(app);
+            applog::info("capture: stopped, permission card shown on the Screenshot tab");
+            return Ok(());
+        }
+    }
     if let Some(main) = app.get_webview_window("main") {
         let _ = main.hide();
     }
@@ -624,6 +668,38 @@ fn screenshot_last_error() -> Option<String> {
     LAST_ERROR.lock().unwrap_or_else(|e| e.into_inner()).take()
 }
 
+/// Whether screen capture is allowed (only macOS asks; true elsewhere).
+#[tauri::command]
+fn screenshot_permission() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        permission::granted()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
+/// macOS: asks for screen recording (adds HL Desk to the list the first time) and opens
+/// System Settings at Privacy & Security > Screen Recording. Does nothing elsewhere.
+#[tauri::command]
+fn screenshot_open_permission_settings() -> Res<()> {
+    #[cfg(target_os = "macos")]
+    {
+        if !permission::granted() {
+            let allowed = permission::request();
+            applog::info(&format!("permission: request returned {allowed}"));
+        }
+        std::process::Command::new("/usr/bin/open")
+            .arg(SCREEN_RECORDING_PANE)
+            .status()
+            .map_err(err)?;
+        applog::info("permission: opened System Settings > Screen Recording");
+    }
+    Ok(())
+}
+
 /// Overlay page: the frozen PNG of its monitor.
 #[tauri::command]
 async fn screenshot_overlay_image(index: usize) -> Res<Response> {
@@ -761,6 +837,8 @@ pub fn commands() -> impl Fn(Invoke) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
         screenshot_capture,
         screenshot_last_error,
+        screenshot_permission,
+        screenshot_open_permission_settings,
         screenshot_overlay_image,
         screenshot_overlay_show,
         screenshot_overlay_cancel,

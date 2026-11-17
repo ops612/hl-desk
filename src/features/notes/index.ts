@@ -51,7 +51,7 @@ export function mount(el: HTMLElement): void {
           title="New note (${isMac ? "⌘" : "Ctrl+"}N)">+</button>
       </div>
       <div class="scroll" id="notes-rows" role="listbox" aria-label="Notes"></div>
-      <div class="notes-undo" role="status" hidden>
+      <div class="undo-bar" role="status" hidden>
         <span>Note deleted</span><span aria-hidden="true">·</span>
         <button type="button">Undo</button>
       </div>
@@ -72,7 +72,7 @@ export function mount(el: HTMLElement): void {
   const editorView = $(".notes-editor-view");
   const search = $<HTMLInputElement>('input[type="search"]');
   const rowsEl = $("#notes-rows");
-  const undoBar = $(".notes-undo");
+  const undoBar = $(".undo-bar");
   const textarea = $<HTMLTextAreaElement>(".notes-body");
   const status = $(".notes-status");
   const countEl = $(".notes-count");

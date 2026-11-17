@@ -10,11 +10,3 @@
 .notes-editor-view .toolbar { padding-bottom: 8px; }
 .notes-status { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .field.notes-body { flex: 1; min-height: 0; width: auto; margin: 0 var(--inset) var(--inset); line-height: 1.5; }
-.notes-undo {
-  display: flex; flex: none; align-items: center; gap: 6px; margin: 0 var(--inset) var(--inset); padding: 8px 12px;
-  border-radius: var(--radius); background: var(--ink); color: #fff; font-size: 12px;
-}
-.notes-undo button {
-  margin-left: auto; padding: 0; border: 0; background: none; color: #fff; font-weight: 500;
-  text-decoration: underline; cursor: pointer;
-}

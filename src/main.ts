@@ -2,6 +2,7 @@ import "@fontsource/ibm-plex-sans/400.css";
 import "@fontsource/ibm-plex-sans/500.css";
 import "@fontsource/ibm-plex-sans/600.css";
 import { exit, getVersion } from "@tauri-apps/api/app";
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import * as clipboard from "./features/clipboard";
@@ -66,7 +67,37 @@ getVersion()
   .then((v) => (document.getElementById("app-version")!.textContent = `HL Desk ${v}`))
   .catch(() => {});
 
+// ---- General settings (Rust: src-tauri/src/settings.rs) ----
+type Settings = { welcomeSeen: boolean; openAtLogin: boolean };
+const loginSwitch = document.getElementById("open-at-login") as HTMLInputElement;
+const settingsError = document.getElementById("settings-error")!;
+
+/** Reads the settings; the switch shows the real state from the OS. */
+async function loadSettings(): Promise<Settings | null> {
+  try {
+    const s = await invoke<Settings>("settings_get");
+    loginSwitch.checked = s.openAtLogin;
+    return s;
+  } catch {
+    return null;
+  }
+}
+
+loginSwitch.addEventListener("change", async () => {
+  settingsError.hidden = true;
+  const want = loginSwitch.checked;
+  try {
+    loginSwitch.checked = await invoke<boolean>("settings_set_open_at_login", { on: want });
+  } catch (e) {
+    loginSwitch.checked = !want;
+    settingsError.textContent = String(e);
+    settingsError.hidden = false;
+  }
+});
+
 function openSheet(): void {
+  void loadSettings();
+  settingsError.hidden = true;
   sheet.hidden = false;
   openBtn.setAttribute("aria-expanded", "true");
   document.getElementById("settings-close")!.focus();
@@ -78,6 +109,67 @@ function closeSheet(restoreFocus = true): void {
   openBtn.setAttribute("aria-expanded", "false");
   if (restoreFocus) openBtn.focus();
 }
+
+// ---- First-run welcome ----
+const welcome = document.getElementById("welcome")!;
+const cmdKey = isMac ? "⌘" : "Ctrl";
+const shiftKey = isMac ? "⇧" : "Shift";
+const svg = (body: string) =>
+  `<svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
+// Icons from Feather (MIT): sidebar, crop, clipboard.
+const welcomeItems: [string, string, string[], string][] = [
+  ["Open HL Desk", isMac ? "Or click HL in the menu bar" : "Or click HL in the tray",
+    [cmdKey, shiftKey, "Space"], svg('<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/>')],
+  ["Capture an area", "Drag over anything, then mark it up",
+    [cmdKey, shiftKey, "2"], svg('<path d="M6.13 1L6 16a2 2 0 0 0 2 2h15"/><path d="M1 6.13L16 6a2 2 0 0 1 2 2v15"/>')],
+  ["Clipboard keeps 1 day", "Copy as usual, then search it here",
+    [cmdKey, "C"], svg('<path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/>')],
+];
+const keycaps = (keys: string[]) => keys.map((k) => `<kbd class="keycap">${k}</kbd>`).join("");
+document.getElementById("welcome-lead")!.textContent = isMac
+  ? "It lives in your menu bar. Everything stays on this Mac."
+  : "It lives in the tray, bottom right. Everything stays on this PC.";
+document.getElementById("welcome-list")!.innerHTML = welcomeItems
+  .map(([title, hint, keys, icon]) => `<li><span class="welcome-icon">${icon}</span>
+    <span class="welcome-text"><strong>${title}</strong><span class="hint">${hint}</span></span>
+    <span class="welcome-keys">${keycaps(keys)}</span></li>`)
+  .join("");
+
+function showWelcome(): void {
+  welcome.hidden = false;
+  // Screen Recording is a macOS permission; the row goes once it is allowed.
+  const perm = document.getElementById("welcome-perm")!;
+  perm.hidden = !isMac;
+  if (isMac) {
+    invoke<boolean>("screenshot_permission")
+      .then((granted) => (perm.hidden = granted))
+      .catch(() => {});
+  }
+  document.getElementById("welcome-try")!.focus();
+}
+
+function closeWelcome(): void {
+  welcome.hidden = true;
+  invoke("settings_set_welcome_seen", { seen: true }).catch(() => {});
+}
+
+document.getElementById("welcome-done")!.addEventListener("click", () => {
+  closeWelcome();
+  show(localTab() ?? order[0]);
+});
+document.getElementById("welcome-try")!.addEventListener("click", () => {
+  closeWelcome();
+  show("screenshot");
+  invoke("screenshot_capture").catch(() => {});
+});
+document.getElementById("welcome-perm-open")!.addEventListener("click", () => {
+  invoke("screenshot_open_permission_settings").catch(() => {});
+});
+document.getElementById("welcome-again")!.addEventListener("click", () => {
+  invoke("settings_set_welcome_seen", { seen: false }).catch(() => {});
+  closeSheet(false);
+  showWelcome();
+});
 
 openBtn.addEventListener("click", openSheet);
 document.getElementById("settings-close")!.addEventListener("click", () => closeSheet());
@@ -112,13 +204,22 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-let saved: string | null = null;
-try {
-  saved = localStorage.getItem(TAB_KEY);
-} catch {
-  // Storage unavailable.
+function localTab(): string | null {
+  try {
+    return localStorage.getItem(TAB_KEY);
+  } catch {
+    return null; // Storage unavailable.
+  }
 }
-show(saved ?? order[0]);
+show(localTab() ?? order[0]);
+void loadSettings().then((s) => {
+  if (s && !s.welcomeSeen) showWelcome();
+});
 
-// A failed capture shows this window (Rust) with the error on the Screenshot tab.
+// A failed capture shows this window (Rust) with the error on the Screenshot tab; so does a
+// capture stopped for the macOS Screen Recording permission (the tab shows the permission card).
 void listen("screenshot-error", () => show("screenshot"));
+void listen("screenshot-permission", () => {
+  welcome.hidden = true;
+  show("screenshot");
+});

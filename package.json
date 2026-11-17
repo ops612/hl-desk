@@ -1,13 +1,14 @@
 {
   "name": "hl-desk",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit && vite build",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "icons:tray": "node scripts/make-tray-icons.mjs"
   },
   "dependencies": {
     "@crabnebula/tauri-plugin-drag": "2.1.0",

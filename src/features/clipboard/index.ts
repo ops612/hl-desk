@@ -26,11 +26,17 @@ const DELETE_ICON =
   '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
 
 const isMac = navigator.userAgent.includes("Mac");
+/** How long "Item deleted · Undo" stays before the item is really deleted. */
+const UNDO_MS = 5000;
 
 export function mount(el: HTMLElement): void {
   el.innerHTML = `
     <div class="toolbar"><input class="field" type="search" placeholder="Search clipboard" aria-label="Search clipboard" spellcheck="false" /></div>
     <ul class="scroll cb-list" role="listbox" aria-label="Clipboard history"></ul>
+    <div class="undo-bar" role="status" hidden>
+      <span>Item deleted</span><span aria-hidden="true">·</span>
+      <button type="button">Undo</button>
+    </div>
     <footer class="footer">
       <span>Click to copy · ${isMac ? "⌘P" : "Ctrl+P"} pin</span>
       <label class="cb-keep">Keep <select class="select" aria-label="Keep items for"></select></label>
@@ -38,10 +44,13 @@ export function mount(el: HTMLElement): void {
   const search = el.querySelector<HTMLInputElement>("input")!;
   const list = el.querySelector<HTMLUListElement>(".cb-list")!;
   const keep = el.querySelector<HTMLSelectElement>("select")!;
+  const undoBar = el.querySelector<HTMLElement>(".undo-bar")!;
 
   let items: Item[] = [];
   let selected = 0;
   let keepHours = 24;
+  /** A deleted item still in its undo time: hidden from the list, deleted when the timer ends. */
+  let pending: { id: number; timer: number } | null = null;
 
   function timeLeft(item: Item): string {
     if (item.pinned) return "Pinned";
@@ -117,7 +126,8 @@ export function mount(el: HTMLElement): void {
   }
 
   async function refresh(): Promise<void> {
-    items = await invoke<Item[]>("clipboard_list", { query: search.value });
+    const all = await invoke<Item[]>("clipboard_list", { query: search.value });
+    items = all.filter((item) => item.id !== pending?.id);
     selected = Math.min(selected, Math.max(0, items.length - 1));
     render();
   }
@@ -134,10 +144,34 @@ export function mount(el: HTMLElement): void {
     await refresh();
   }
 
-  async function remove(item: Item): Promise<void> {
-    await invoke("clipboard_delete", { id: item.id });
-    await refresh();
+  // ---- Delete with undo (like Notes): hide at once, delete for real after 5 s ----
+
+  async function commitPending(): Promise<void> {
+    const p = pending;
+    if (!p) return;
+    clearTimeout(p.timer);
+    pending = null;
+    undoBar.hidden = true;
+    await invoke("clipboard_delete", { id: p.id }).catch(() => {});
   }
+
+  async function remove(item: Item): Promise<void> {
+    await commitPending();
+    pending = { id: item.id, timer: window.setTimeout(() => void commitPending().then(refresh), UNDO_MS) };
+    undoBar.hidden = false;
+    items = items.filter((i) => i.id !== item.id);
+    selected = Math.min(selected, Math.max(0, items.length - 1));
+    render();
+  }
+
+  undoBar.querySelector("button")!.addEventListener("click", () => {
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    pending = null;
+    undoBar.hidden = true;
+    void refresh();
+    search.focus();
+  });
 
   async function loadSettings(): Promise<void> {
     const settings = await invoke<{ keepHours: number }>("clipboard_get_settings");
