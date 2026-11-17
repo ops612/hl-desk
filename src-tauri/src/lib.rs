@@ -25,10 +25,26 @@ fn toggle_window(app: &AppHandle) {
         if window.is_visible().unwrap_or(false) {
             let _ = window.hide();
         } else {
+            #[cfg(target_os = "windows")]
+            place_near_tray(&window);
             let _ = window.show();
             let _ = window.set_focus();
         }
     }
+}
+
+/// Windows: open in the bottom-right corner of the main monitor's work area, just above the
+/// taskbar and next to the tray (macOS keeps the centred window from tauri.conf.json).
+#[cfg(target_os = "windows")]
+fn place_near_tray(window: &tauri::WebviewWindow) {
+    let (Ok(Some(monitor)), Ok(size)) = (window.primary_monitor(), window.outer_size()) else {
+        return;
+    };
+    let area = monitor.work_area();
+    let margin = (12.0 * monitor.scale_factor()) as i32;
+    let x = area.position.x + area.size.width as i32 - size.width as i32 - margin;
+    let y = area.position.y + area.size.height as i32 - size.height as i32 - margin;
+    let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

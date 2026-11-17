@@ -1,7 +1,9 @@
 //! Screenshot feature (Rust side). Only this file and src/features/screenshot/ belong to it.
 //!
 //! Capture uses macOS's own `screencapture -i` (area selection on any display, and it shows the
-//! Screen Recording prompt). Captures are PNG files in <app data>/screenshots/, listed in
+//! Screen Recording prompt). Elsewhere (Windows) it freezes every monitor with xcap and opens our
+//! own selection overlay (overlay.html, one window per monitor, label "overlay-<n>-<i>").
+//! Captures are PNG files in <app data>/screenshots/, listed in
 //! screenshot.db and deleted after 24 hours. Each capture opens in its own editor window
 //! (editor.html, label "editor-<id>").
 
@@ -189,7 +191,11 @@ fn capture(app: &AppHandle) -> Res<()> {
     if !path.exists() {
         return Ok(()); // cancelled
     }
+    add_shot(app, &path, created)
+}
 
+/// Lists a new capture file in screenshot.db, tells every window, and opens it in the editor.
+fn add_shot(app: &AppHandle, path: &std::path::Path, created: i64) -> Res<()> {
     let c = conn(app)?;
     c.execute(
         "INSERT INTO shots (path, created_at, updated_at) VALUES (?1, ?2, ?2)",
@@ -201,9 +207,229 @@ fn capture(app: &AppHandle) -> Res<()> {
     open_editor(app, id)
 }
 
+/// Windows (and other systems): freeze every monitor, let the user drag a rectangle on our own
+/// overlay, then crop that monitor's image. Blocks this capture thread until the overlay ends, so
+/// CAPTURING stays set until then.
 #[cfg(not(target_os = "macos"))]
-fn capture(_app: &AppHandle) -> Res<()> {
-    Err("Area capture is macOS-only for now.".into())
+fn capture(app: &AppHandle) -> Res<()> {
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.hide();
+    }
+    // Give the window time to disappear before the screens are frozen.
+    std::thread::sleep(Duration::from_millis(250));
+
+    let screens = overlay::freeze_screens()?;
+    let Some(pick) = overlay::select(app, &screens)? else {
+        return Ok(()); // cancelled
+    };
+
+    let created = now_ms();
+    let path = shots_dir(app)?.join(format!("{created}.png"));
+    overlay::save_crop(&screens, &pick, &path)?;
+    add_shot(app, &path, created)
+}
+
+// ---------- selection overlay (Windows) ----------
+
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+mod overlay {
+    use std::{
+        path::{Path, PathBuf},
+        sync::{
+            atomic::{AtomicU64, Ordering},
+            mpsc::{channel, Sender},
+            Mutex,
+        },
+        time::Duration,
+    };
+
+    use tauri::{
+        AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder,
+        WindowEvent,
+    };
+    use xcap::image::{
+        codecs::png::{CompressionType, FilterType, PngEncoder},
+        imageops, ExtendedColorType, ImageEncoder, RgbaImage,
+    };
+
+    use super::{err, Res};
+
+    /// An overlay left open this long is cancelled, so a stuck page can never block captures.
+    const TIMEOUT: Duration = Duration::from_secs(300);
+
+    /// One monitor, frozen at the moment of the capture.
+    pub struct Screen {
+        /// Top-left corner on the virtual desktop, physical pixels.
+        x: i32,
+        y: i32,
+        image: RgbaImage,
+    }
+
+    /// The rectangle the user dragged, in physical pixels of one monitor's image.
+    pub struct Pick {
+        monitor: usize,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+    }
+
+    /// The overlay that is open now. Dropping it (cancel, or an overlay window closed) wakes
+    /// the capture thread with "cancelled".
+    struct Session {
+        id: u64,
+        pngs: Vec<PathBuf>,
+        done: Sender<Pick>,
+    }
+
+    static SESSION: Mutex<Option<Session>> = Mutex::new(None);
+    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+    /// Fast PNG compression: the frozen screens are shown at once and deleted afterwards.
+    fn save_png(image: &RgbaImage, path: &Path) -> Res<()> {
+        let file = std::io::BufWriter::new(std::fs::File::create(path).map_err(err)?);
+        PngEncoder::new_with_quality(file, CompressionType::Fast, FilterType::Adaptive)
+            .write_image(image.as_raw(), image.width(), image.height(), ExtendedColorType::Rgba8)
+            .map_err(err)
+    }
+
+    /// Captures every monitor (physical pixels).
+    pub fn freeze_screens() -> Res<Vec<Screen>> {
+        let mut screens = Vec::new();
+        for m in xcap::Monitor::all().map_err(err)? {
+            screens.push(Screen {
+                x: m.x().map_err(err)?,
+                y: m.y().map_err(err)?,
+                image: m.capture_image().map_err(err)?,
+            });
+        }
+        if screens.is_empty() {
+            return Err("No screen found to capture.".into());
+        }
+        Ok(screens)
+    }
+
+    /// Shows the overlays and waits until the user drags a rectangle (Some) or cancels (None).
+    pub fn select(app: &AppHandle, screens: &[Screen]) -> Res<Option<Pick>> {
+        let dir = std::env::temp_dir().join("hl-desk-capture");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).map_err(err)?;
+        let pngs: Vec<PathBuf> = (0..screens.len())
+            .map(|i| dir.join(format!("monitor-{i}.png")))
+            .collect();
+        // PNG encoding is the slow part: one thread per monitor.
+        std::thread::scope(|s| {
+            let jobs: Vec<_> = screens
+                .iter()
+                .zip(&pngs)
+                .map(|(screen, png)| s.spawn(move || save_png(&screen.image, png)))
+                .collect();
+            jobs.into_iter().try_for_each(|job| {
+                job.join()
+                    .unwrap_or_else(|_| Err("PNG encoding failed".to_string()))
+            })
+        })?;
+
+        let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
+        let (tx, rx) = channel();
+        *SESSION.lock().unwrap() = Some(Session { id, pngs, done: tx });
+
+        let opened = screens
+            .iter()
+            .enumerate()
+            .try_for_each(|(i, screen)| open_window(app, id, i, screen));
+        // Err (timeout, or the session was dropped) means cancelled.
+        let pick = match opened {
+            Ok(()) => rx.recv_timeout(TIMEOUT).ok(),
+            Err(_) => None,
+        };
+
+        // Close this session's overlays and delete the frozen PNGs.
+        end(Some(id));
+        let prefix = format!("overlay-{id}-");
+        for (label, window) in app.webview_windows() {
+            if label.starts_with(&prefix) {
+                let _ = window.destroy();
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        opened.map(|()| pick)
+    }
+
+    /// One borderless, always-on-top window exactly over the monitor. It stays hidden until its
+    /// page has drawn the frozen image (screenshot_overlay_show).
+    fn open_window(app: &AppHandle, id: u64, index: usize, screen: &Screen) -> Res<()> {
+        let window = WebviewWindowBuilder::new(
+            app,
+            format!("overlay-{id}-{index}"),
+            WebviewUrl::App(format!("overlay.html?m={index}").into()),
+        )
+        .title("Capture area")
+        .decorations(false)
+        .shadow(false)
+        .resizable(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .visible(false)
+        .focused(false)
+        .build()
+        .map_err(err)?;
+        // Closing any overlay another way (Alt+F4) cancels the capture.
+        window.on_window_event(move |event| {
+            if let WindowEvent::Destroyed = event {
+                end(Some(id));
+            }
+        });
+        // Position first, so a monitor with another scale factor applies before the size is set.
+        window
+            .set_position(PhysicalPosition::new(screen.x, screen.y))
+            .map_err(err)?;
+        window
+            .set_size(PhysicalSize::new(screen.image.width(), screen.image.height()))
+            .map_err(err)
+    }
+
+    /// Takes the open session (only if it is session `id`, when given). Dropping it wakes `select`.
+    fn end(id: Option<u64>) -> Option<Session> {
+        let mut session = SESSION.lock().unwrap();
+        match (session.as_ref(), id) {
+            (Some(s), Some(id)) if s.id != id => None,
+            _ => session.take(),
+        }
+    }
+
+    /// The frozen PNG of monitor `index`.
+    pub fn png_path(index: usize) -> Res<PathBuf> {
+        SESSION
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|s| s.pngs.get(index).cloned())
+            .ok_or_else(|| "The capture was cancelled.".to_string())
+    }
+
+    pub fn cancel() {
+        end(None);
+    }
+
+    pub fn finish(monitor: usize, x: u32, y: u32, width: u32, height: u32) {
+        if let Some(session) = end(None) {
+            let _ = session.done.send(Pick { monitor, x, y, width, height });
+        }
+    }
+
+    /// Crops the pick out of its monitor's image (clamped to it) and saves it as PNG.
+    pub fn save_crop(screens: &[Screen], pick: &Pick, path: &Path) -> Res<()> {
+        let image = &screens
+            .get(pick.monitor)
+            .ok_or_else(|| "Unknown monitor".to_string())?
+            .image;
+        let x = pick.x.min(image.width().saturating_sub(1));
+        let y = pick.y.min(image.height().saturating_sub(1));
+        let width = pick.width.clamp(1, image.width() - x);
+        let height = pick.height.clamp(1, image.height() - y);
+        save_png(&imageops::crop_imm(image, x, y, width, height).to_image(), path)
+    }
 }
 
 // ---------- editor window ----------
@@ -274,11 +500,35 @@ fn open_editor(app: &AppHandle, id: i64) -> Res<()> {
 /// Starts an area capture (the same as the shortcut). Returns at once; the editor opens when done.
 #[tauri::command]
 fn screenshot_capture(app: AppHandle) -> Res<()> {
-    if cfg!(not(target_os = "macos")) {
-        return Err("Area capture is macOS-only for now.".into());
-    }
     start_capture(app);
     Ok(())
+}
+
+/// Overlay page: the frozen PNG of its monitor.
+#[tauri::command]
+async fn screenshot_overlay_image(index: usize) -> Res<Response> {
+    let bytes = std::fs::read(overlay::png_path(index)?).map_err(err)?;
+    Ok(Response::new(bytes))
+}
+
+/// Overlay page: its frozen image is drawn, so show the window and give it the keyboard
+/// (called again when the pointer moves onto another monitor's overlay).
+#[tauri::command]
+fn screenshot_overlay_show(window: WebviewWindow) {
+    let _ = window.show();
+    let _ = window.set_focus();
+}
+
+/// Overlay page: Esc or right-click.
+#[tauri::command]
+fn screenshot_overlay_cancel() {
+    overlay::cancel();
+}
+
+/// Overlay page: the dragged rectangle, in physical pixels of monitor `index`'s image.
+#[tauri::command]
+fn screenshot_overlay_done(index: usize, x: u32, y: u32, width: u32, height: u32) {
+    overlay::finish(index, x, y, width, height);
 }
 
 /// Recent captures, newest first (expired ones are deleted first).
@@ -370,6 +620,10 @@ fn screenshot_close(window: WebviewWindow) {
 pub fn commands() -> impl Fn(Invoke) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
         screenshot_capture,
+        screenshot_overlay_image,
+        screenshot_overlay_show,
+        screenshot_overlay_cancel,
+        screenshot_overlay_done,
         screenshot_list,
         screenshot_get,
         screenshot_read,

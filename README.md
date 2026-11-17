@@ -27,7 +27,7 @@ Running the whole app (`npm run tauri dev`) needs Rust and, on Windows, the MSVC
   both, checks them with `spctl` and uploads the `.dmg` as the artifact `HL-Desk-macos-universal`.
   If a signing secret is missing the job fails and names it; it never ships an unsigned build.
   It also uploads the resolved `Cargo.lock`.
-- **Windows** (only when started by hand, "Run workflow"): builds an unsigned NSIS installer,
+- **Windows** (every push to `main`, and by hand): builds an unsigned NSIS installer,
   artifact `HL-Desk-windows`. Windows asks "More info, Run anyway" once.
 
 Repository secrets used by the macOS job (names only):
@@ -82,5 +82,9 @@ Shared files (change only in a separate, reviewed PR): `src/main.ts` (tabs), `sr
   in the app data folder.
 - **Already installed:** global-shortcut, clipboard-manager, fs (scoped to app data, temp, Pictures,
   Desktop), drag (`tauri-plugin-drag` by CrabNebula, drags files out of the window), `xcap` for screen
-  capture, and on macOS `objc2-app-kit` for `NSPasteboard` (change count, concealed copies).
+  capture, on macOS `objc2-app-kit` for `NSPasteboard` (change count, concealed copies), and on
+  Windows `windows-sys` for the clipboard formats that mark a copy private.
+- **Windows area capture:** `screenshot.rs` freezes every monitor with xcap and opens one overlay
+  window per monitor (`overlay.html`, `src/overlay/`, capability `overlay.json`); the user drags a
+  rectangle there (Esc or right-click cancels). macOS uses `screencapture -i` instead.
 - **macOS:** `src-tauri/Info.plist` sets `LSUIElement` (no Dock icon) and the Screen Recording prompt text.

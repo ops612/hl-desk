@@ -33,6 +33,11 @@ objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSArray"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard"] }
 
+# Windows clipboard formats for the clipboard feature: skip copies marked private
+# (ExcludeClipboardContentFromMonitorProcessing, Clipboard Viewer Ignore, CanIncludeInClipboardHistory = 0).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_DataExchange", "Win32_System_Memory"] }
+
 [profile.release]
 codegen-units = 1
 lto = true

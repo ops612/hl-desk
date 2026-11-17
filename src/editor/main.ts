@@ -40,6 +40,7 @@ const markerRadius = 12 * unit;
 
 document.getElementById("keys")!.textContent =
   `N number · P pen · C crop · ${isMac ? "⌘Z" : "Ctrl+Z"} undo · Esc close`;
+undoBtn.title = `Undo (${isMac ? "⌘Z" : "Ctrl+Z"})`;
 
 // ---------- state from the operation list ----------
 

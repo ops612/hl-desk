@@ -10,6 +10,10 @@ type Shot = { id: number; path: string; createdAt: number; updatedAt: number };
 const KEEP_MS = 24 * 60 * 60 * 1000;
 const isMac = navigator.userAgent.includes("Mac");
 const shortcut = isMac ? "⌘⇧2" : "Ctrl+Shift+2";
+// The Screen Recording permission exists only on macOS.
+const macHint = isMac
+  ? "<br /><br />First time on a Mac: if the capture shows only your wallpaper, turn on HL Desk in System Settings → Privacy &amp; Security → Screen Recording, then quit and reopen HL Desk."
+  : "";
 
 // Thumbnail object URLs, keyed by "id:updatedAt" so an edited capture reloads.
 const urls = new Map<string, string>();
@@ -48,7 +52,7 @@ export function mount(el: HTMLElement): void {
 async function render(grid: HTMLElement): Promise<void> {
   const shots = await invoke<Shot[]>("screenshot_list");
   if (shots.length === 0) {
-    grid.innerHTML = `<p class="shot-empty">No screenshots yet.<br />Press <kbd>${shortcut}</kbd> or Capture area, then drag over what you want.<br /><br />First time on a Mac: if the capture shows only your wallpaper, turn on HL Desk in System Settings → Privacy &amp; Security → Screen Recording, then quit and reopen HL Desk.</p>`;
+    grid.innerHTML = `<p class="shot-empty">No screenshots yet.<br />Press <kbd>${shortcut}</kbd> or Capture area, then drag over what you want.${macHint}</p>`;
   } else {
     const cards = await Promise.all(shots.map(card));
     grid.replaceChildren(...cards);
