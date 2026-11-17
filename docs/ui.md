@@ -24,7 +24,7 @@ Every feature follows these rules. Goal: simple, complete, easy. Someone who has
 ## Layout
 
 - Menu-bar popover, about 380 x 520 px. Header (wordmark and settings), then a 3-way segmented control: Clipboard, Screenshot, Notes, then content, then a footer hint line.
-- The screenshot editor opens as its own window, sized to the capture: toolbar on top, image in the middle, a "Drag me" drop source on the right, shortcut hints in the footer.
+- The screenshot editor opens as its own window, sized to the capture: toolbar on top, image in the middle, a bottom bar with a wide "Drag to share" drop source next to Copy and Done, shortcut hints in the footer.
 - At most one indigo-filled button per view.
 
 ## UX rules

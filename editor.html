@@ -17,22 +17,31 @@
         <button class="swatch" data-color="#E5484D" title="Red" style="--c: #e5484d"></button>
         <button class="swatch" data-color="#0B1220" title="Ink" style="--c: #0b1220"></button>
       </div>
-      <button id="undo" class="plain" title="Undo">↶ Undo</button>
-      <button id="apply-crop" class="plain" hidden>Apply crop ↵</button>
-      <span class="spacer"></span>
+      <div class="group">
+        <button id="undo" class="plain" title="Undo">↶ Undo</button>
+        <button id="redo" class="plain" title="Redo">↷ Redo</button>
+      </div>
+      <button id="apply-crop" class="plain apply" hidden>Apply crop ↵</button>
+    </header>
+    <div class="stage" id="stage">
+      <canvas id="canvas"></canvas>
+      <span class="pick-tag" id="pick-tag" hidden>Delete to remove</span>
+    </div>
+    <div class="actions">
+      <div class="drag" id="drag" role="button" tabindex="-1" title="Drag into any app to share">
+        <img id="drag-thumb" alt="" draggable="false" />
+        <span class="drag-text"><strong>Drag to share</strong><span>into WhatsApp, Mail or any app</span></span>
+        <svg class="drag-grip" width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" fill="currentColor">
+          <circle cx="5" cy="3" r="1.2" /><circle cx="9" cy="3" r="1.2" /><circle cx="5" cy="7" r="1.2" />
+          <circle cx="9" cy="7" r="1.2" /><circle cx="5" cy="11" r="1.2" /><circle cx="9" cy="11" r="1.2" />
+        </svg>
+      </div>
+      <span id="status" role="status"></span>
       <button id="copy" class="plain">Copy</button>
       <button id="done" class="primary">Done</button>
-    </header>
-    <div class="body">
-      <div class="stage" id="stage"><canvas id="canvas"></canvas></div>
-      <aside class="drag" id="drag" title="Drag into any app to share">
-        <img id="drag-thumb" alt="" draggable="false" />
-        <span>Drag me</span>
-      </aside>
     </div>
     <footer class="foot">
       <span id="keys"></span>
-      <span id="status" role="status"></span>
     </footer>
     <script type="module" src="/src/editor/main.ts"></script>
   </body>

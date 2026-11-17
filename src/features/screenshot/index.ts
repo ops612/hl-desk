@@ -11,7 +11,10 @@ type Shot = { id: number; path: string; createdAt: number; updatedAt: number };
 
 const KEEP_MS = 24 * 60 * 60 * 1000;
 const isMac = navigator.userAgent.includes("Mac");
-const shortcut = isMac ? "⌘⇧2" : "Ctrl+Shift+2";
+const DEFAULT_KEY = isMac ? "⌘⇧2" : "Ctrl+Shift+2";
+const DEVICE_KEY = isMac ? "⌘⇧4" : "Print Screen";
+/** The capture keys as shown on the tab (the device key is added when chosen in Settings). */
+let keys = `<kbd>${DEFAULT_KEY}</kbd>`;
 
 // Thumbnail object URLs, keyed by "id:updatedAt" so an edited capture reloads.
 const urls = new Map<string, string>();
@@ -20,7 +23,7 @@ export function mount(el: HTMLElement): void {
   el.innerHTML = `
     <div class="toolbar shot-top">
       <button class="btn-primary shot-capture" type="button">Capture area</button>
-      <p class="hint shot-hint">or press <kbd>${shortcut}</kbd></p>
+      <p class="hint shot-hint">or press <span class="shot-keys">${keys}</span></p>
     </div>
     <div class="shot-perm" role="alert" hidden>
       <strong>Allow screen recording</strong>
@@ -79,6 +82,22 @@ export function mount(el: HTMLElement): void {
 
   const refresh = () => render(grid, label).catch(showError);
   void listen("screenshot-changed", refresh);
+
+  // The capture keys (Settings > Capture key).
+  const keysEl = el.querySelector<HTMLElement>(".shot-keys")!;
+  const loadKeys = () =>
+    invoke<{ key: string }>("screenshot_capture_settings")
+      .then((s) => {
+        keys =
+          s.key === "device"
+            ? `<kbd>${DEVICE_KEY}</kbd> or <kbd>${DEFAULT_KEY}</kbd>`
+            : `<kbd>${DEFAULT_KEY}</kbd>`;
+        keysEl.innerHTML = keys;
+        void refresh();
+      })
+      .catch(() => {});
+  void listen("screenshot-keys-changed", loadKeys);
+  void loadKeys();
   setInterval(refresh, 60_000); // keeps "time left" current
   void refresh();
 }
@@ -87,7 +106,7 @@ async function render(grid: HTMLElement, label: HTMLElement): Promise<void> {
   const shots = await invoke<Shot[]>("screenshot_list");
   label.hidden = shots.length === 0;
   if (shots.length === 0) {
-    grid.innerHTML = `<p class="shot-empty">No screenshots yet.<br />Press <kbd>${shortcut}</kbd> or Capture area, then drag over what you want.</p>`;
+    grid.innerHTML = `<p class="shot-empty">No screenshots yet.<br />Press ${keys} or Capture area, then drag over what you want.</p>`;
   } else {
     const cards = await Promise.all(shots.map(card));
     grid.replaceChildren(...cards);

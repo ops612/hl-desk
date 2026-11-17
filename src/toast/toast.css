@@ -1,0 +1,23 @@
+/* Corner toast. Tokens, font and shared classes (.btn-primary, .icon-btn) come from src/styles.css. */
+body.toast {
+  border: 1px solid var(--border); justify-content: center;
+  user-select: none; -webkit-user-select: none; cursor: default;
+}
+.toast-notice {
+  display: flex; align-items: center; justify-content: center; gap: 8px; margin: 0;
+  font-size: 13px; font-weight: 500;
+}
+.toast-notice::before {
+  content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--muted);
+}
+.toast-shot { display: flex; align-items: center; gap: 12px; padding: 0 8px 0 var(--inset); }
+.toast-thumb {
+  flex: none; width: 88px; height: 66px; padding: 0; overflow: hidden; cursor: pointer;
+  border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg);
+}
+.toast-thumb:hover { border-color: var(--indigo); }
+.toast-thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.toast-main { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.toast-title { font-size: 12px; font-weight: 500; }
+.toast-markup { height: 30px; }
+.toast-close { align-self: flex-start; margin-top: 6px; }

@@ -92,9 +92,17 @@ Shared files (change only in a separate, reviewed PR): `src/main.ts` (tabs), `sr
   Desktop), drag (`tauri-plugin-drag` by CrabNebula, drags files out of the window), `xcap` for screen
   capture, on macOS `objc2-app-kit` for `NSPasteboard` (change count, concealed copies), and on
   Windows `windows-sys` for the clipboard formats that mark a copy private.
-- **Windows area capture:** `screenshot.rs` freezes every monitor with xcap and opens one overlay
-  window per monitor (`overlay.html`, `src/overlay/`, capability `overlay.json`); the user drags a
-  rectangle there (Esc or right-click cancels). macOS uses `screencapture -i` instead.
+- **Windows area capture:** `screenshot.rs` freezes every monitor with xcap and opens one
+  transparent overlay window per monitor (`overlay.html`, `src/overlay/`, capability `overlay.json`):
+  dim layer and hint at once, the frozen pixels (raw RGBA) fill in after; crosshair lines and a
+  magnifier. The user drags a rectangle (Esc, right-click or the capture key again cancels; a
+  cancel shows a "Capture cancelled" toast). macOS uses `screencapture -i` instead.
+- **Capture keys and device screenshots:** `src-tauri/src/screenshot/keys.rs` (Ctrl/Cmd+Shift+2
+  always; Print Screen / Cmd+Shift+4 as a setting, with a hint when the system still owns it),
+  `screenshot/watch.rs` ("Mark up in HL Desk" after Win+Shift+S via the clipboard, or a new file in
+  the macOS screenshot folder), `screenshot/toast.rs` (the corner toast: `toast.html`, `src/toast/`,
+  capability `toast.json`). The settings live in `src/features/screenshot/settings.ts` (mounted in
+  the Settings sheet) and `settings.json`.
 - **macOS:** `src-tauri/Info.plist` sets `LSUIElement` (no Dock icon) and the Screen Recording prompt text.
 - **Log:** `src-tauri/src/applog.rs` writes `<app data>/hl-desk.log` (UTC time, level, message; cut
   to the last ~500 KB past 1 MB; on Windows `%APPDATA%\com.hobbyland.hldesk\hl-desk.log`). Use

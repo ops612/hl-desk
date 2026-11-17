@@ -1,4 +1,6 @@
-/* Area-capture overlay (Windows): the frozen screen, a dim layer and the dragged rectangle. */
+/* Area-capture overlay (Windows): a transparent window over one monitor. At once it shows a dim
+   layer and the hint over the live screen; the frozen screen fills in under the dim layer when
+   its pixels arrive. Crosshair lines and a magnifier follow the pointer. */
 :root {
   --ink: #0b1220;
   --indigo: #2f4cc8;
@@ -7,7 +9,7 @@
 }
 html, body {
   margin: 0; height: 100%; overflow: hidden;
-  background: var(--ink); cursor: crosshair;
+  background: transparent; cursor: crosshair;
   user-select: none; -webkit-user-select: none;
 }
 #shot { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
@@ -16,14 +18,29 @@ html, body {
   position: fixed; outline: 1px solid #fff;
   box-shadow: 0 0 0 1px var(--indigo), 0 0 0 100vmax var(--dim);
 }
-#size {
-  position: absolute; left: 0; bottom: 100%; margin-bottom: 6px;
-  padding: 2px 6px; border-radius: 8px; background: var(--ink); color: #fff; white-space: nowrap;
+#hline, #vline {
+  position: fixed; pointer-events: none; background: rgb(255 255 255 / 85%);
+  box-shadow: 0 0 0 1px rgb(11 18 32 / 35%);
 }
-#sel.near-top #size { bottom: auto; top: 0; margin: 6px; }
+#hline { left: 0; right: 0; height: 1px; }
+#vline { top: 0; bottom: 0; width: 1px; }
+#loupe {
+  position: fixed; pointer-events: none; display: flex; flex-direction: column; align-items: center; gap: 4px;
+}
+#loupe-canvas {
+  width: 120px; height: 120px; border-radius: 10px; background: var(--ink);
+  box-shadow: 0 0 0 2px #fff, 0 2px 10px rgb(11 18 32 / 45%);
+}
+#loupe-text {
+  padding: 2px 8px; border-radius: 8px; background: var(--ink); color: #fff; white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
 #hint {
-  position: fixed; top: 24px; left: 50%; transform: translateX(-50%); margin: 0;
-  padding: 6px 12px; border-radius: 10px; background: var(--ink); color: #fff;
-  pointer-events: none;
+  position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); margin: 0;
+  padding: 16px 28px; border-radius: 14px; background: rgb(11 18 32 / 88%); color: #fff;
+  font-size: 22px; font-weight: 500; letter-spacing: 0.2px; white-space: nowrap;
+  box-shadow: 0 4px 24px rgb(11 18 32 / 35%); pointer-events: none; transition: opacity 0.15s;
 }
+#hint .dot { margin: 0 12px; opacity: 0.6; }
+#hint.faded { opacity: 0.25; }
 [hidden] { display: none !important; }

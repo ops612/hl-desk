@@ -7,7 +7,17 @@
 //! screenshot.db and deleted after 24 hours. Each capture opens in its own editor window
 //! (editor.html, label "editor-<id>").
 //! Every capture step is written to the app log (applog.rs); a failed capture shows the main
-//! window with the error on the Screenshot tab (event "screenshot-error").
+//! window with the error on the Screenshot tab (event "screenshot-error"), and a cancelled one
+//! shows a short "Capture cancelled" toast (screenshot/toast.rs).
+//!
+//! Sub-modules (files in src-tauri/src/screenshot/):
+//! - keys.rs: the capture keys (Ctrl/Cmd+Shift+2 always, plus Print Screen / Cmd+Shift+4 as a setting)
+//! - watch.rs: "Mark up in HL Desk" after a device screenshot (Windows clipboard, macOS folder)
+//! - toast.rs: the small corner window for notices and the "Mark up in HL Desk" offer
+
+mod keys;
+mod toast;
+mod watch;
 
 use std::{
     path::PathBuf,
@@ -15,7 +25,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Mutex,
     },
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use serde::Serialize;
@@ -25,7 +35,10 @@ use tauri::{
     AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 use tauri_plugin_clipboard_manager::ClipboardExt;
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use xcap::image::{
+    codecs::png::{CompressionType, FilterType, PngEncoder},
+    ExtendedColorType, ImageEncoder,
+};
 
 use crate::{applog, db};
 
@@ -39,8 +52,16 @@ const FAILED: &str = "screenshot-error";
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const PERMISSION: &str = "screenshot-permission";
 
-/// True while a capture is running, so a second shortcut press does nothing.
+/// Sent to every window when the capture key setting changes (the Screenshot tab shows the keys).
+const KEYS_CHANGED: &str = "screenshot-keys-changed";
+
+/// True while a capture is running; a second press of the capture key then cancels it.
 static CAPTURING: AtomicBool = AtomicBool::new(false);
+/// The capture key was pressed again before the overlay was open: cancel it as soon as it opens.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+static CANCEL_PENDING: AtomicBool = AtomicBool::new(false);
+/// When the current capture started (for the timings in the log).
+static STARTED: Mutex<Option<Instant>> = Mutex::new(None);
 /// The last capture error, for a Screenshot tab that was not open yet when it was sent.
 static LAST_ERROR: Mutex<Option<String>> = Mutex::new(None);
 
@@ -57,13 +78,22 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// Cmd+Shift+2 on macOS, Ctrl+Shift+2 elsewhere.
-fn capture_shortcut() -> Shortcut {
-    #[cfg(target_os = "macos")]
-    let main = Modifiers::SUPER;
-    #[cfg(not(target_os = "macos"))]
-    let main = Modifiers::CONTROL;
-    Shortcut::new(Some(main | Modifiers::SHIFT), Code::Digit2)
+/// Milliseconds since the current capture started (0 when none is running).
+fn elapsed_ms() -> u128 {
+    STARTED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .map_or(0, |t| t.elapsed().as_millis())
+}
+
+/// PNG bytes of an RGBA image (fast compression).
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn png_bytes(rgba: &[u8], width: u32, height: u32) -> Res<Vec<u8>> {
+    let mut out = Vec::new();
+    PngEncoder::new_with_quality(&mut out, CompressionType::Fast, FilterType::Adaptive)
+        .write_image(rgba, width, height, ExtendedColorType::Rgba8)
+        .map_err(err)?;
+    Ok(out)
 }
 
 /// Called once at start-up, after the plugins are ready.
@@ -72,18 +102,10 @@ pub fn init(app: &AppHandle) {
         applog::error(&format!("screenshot: clean-up failed: {e}"));
     }
 
-    let registered = app
-        .global_shortcut()
-        .on_shortcut(capture_shortcut(), |app, _shortcut, event| {
-            if event.state() == ShortcutState::Pressed {
-                applog::info("capture: shortcut pressed");
-                start_capture(app.clone());
-            }
-        });
-    match registered {
-        Ok(()) => applog::info("screenshot: capture shortcut registered"),
-        Err(e) => applog::error(&format!("screenshot: could not register the capture shortcut: {e}")),
-    }
+    // Ctrl/Cmd+Shift+2 always, plus Print Screen / Cmd+Shift+4 when chosen in Settings.
+    keys::init(app);
+    // "Mark up in HL Desk" after a device screenshot (Win+Shift+S, Cmd+Shift+4 ...).
+    watch::init(app);
 
     // Delete expired captures every 10 minutes while the app runs.
     let app = app.clone();
@@ -173,20 +195,56 @@ fn cleanup(app: &AppHandle) -> Res<usize> {
 
 // ---------- capture ----------
 
+/// How a capture ended without an error.
+enum Outcome {
+    /// Saved and opened in the editor, or stopped for a reason already shown (macOS permission card).
+    Done,
+    /// The user cancelled (Esc, right-click, the capture key again): a "Capture cancelled" toast.
+    Cancelled,
+}
+
 /// Starts an area capture on its own thread (shortcut, Capture area button, `--capture`).
+/// While one is open, a second call (the capture key pressed again) cancels it.
 pub(crate) fn start_capture(app: AppHandle) {
     if CAPTURING.swap(true, Ordering::SeqCst) {
-        applog::info("capture: already running, ignored");
+        #[cfg(target_os = "macos")]
+        applog::info("capture: already running (screencapture is open; Esc cancels it), ignored");
+        #[cfg(not(target_os = "macos"))]
+        {
+            applog::info("capture: pressed again while a capture is open, cancelling it");
+            CANCEL_PENDING.store(true, Ordering::SeqCst);
+            overlay::cancel(None, None);
+        }
         return;
     }
+    CANCEL_PENDING.store(false, Ordering::SeqCst);
+    *STARTED.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
     *LAST_ERROR.lock().unwrap_or_else(|e| e.into_inner()) = None;
     applog::info("capture: start");
     std::thread::spawn(move || {
-        if let Err(e) = capture(&app) {
-            report_failure(&app, &e);
+        match capture(&app) {
+            Ok(Outcome::Done) => {}
+            Ok(Outcome::Cancelled) => toast::notice(&app, "cancelled"),
+            Err(e) => report_failure(&app, &e),
         }
+        CANCEL_PENDING.store(false, Ordering::SeqCst);
         CAPTURING.store(false, Ordering::SeqCst);
     });
+}
+
+/// Hides the popover and any toast before the screen is captured, waiting only if one was showing.
+fn clear_screen_for_capture(app: &AppHandle) {
+    let mut wait = toast::close_all(app);
+    if let Some(main) = app.get_webview_window("main") {
+        if main.is_visible().unwrap_or(false) {
+            let _ = main.hide();
+            wait = true;
+        }
+    }
+    if wait {
+        // Give the windows time to disappear before the screen is captured.
+        std::thread::sleep(Duration::from_millis(200));
+    }
 }
 
 /// Never fail silently: log it, tell the Screenshot tab, and show the main window.
@@ -225,7 +283,7 @@ const SCREEN_RECORDING_PANE: &str =
     "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
 
 #[cfg(target_os = "macos")]
-fn capture(app: &AppHandle) -> Res<()> {
+fn capture(app: &AppHandle) -> Res<Outcome> {
     if permission::granted() {
         applog::info("capture: screen recording allowed");
     } else {
@@ -237,14 +295,10 @@ fn capture(app: &AppHandle) -> Res<()> {
             let _ = app.emit(PERMISSION, ());
             crate::show_main_window(app);
             applog::info("capture: stopped, permission card shown on the Screenshot tab");
-            return Ok(());
+            return Ok(Outcome::Done);
         }
     }
-    if let Some(main) = app.get_webview_window("main") {
-        let _ = main.hide();
-    }
-    // Give the window time to disappear before the crosshair shows.
-    std::thread::sleep(Duration::from_millis(250));
+    clear_screen_for_capture(app);
 
     let created = now_ms();
     let path = shots_dir(app)?.join(format!("{created}.png"));
@@ -257,9 +311,10 @@ fn capture(app: &AppHandle) -> Res<()> {
         .map_err(err)?;
     if !path.exists() {
         applog::info("capture: cancelled");
-        return Ok(());
+        return Ok(Outcome::Cancelled);
     }
-    add_shot(app, &path, created)
+    add_shot(app, &path, created)?;
+    Ok(Outcome::Done)
 }
 
 /// Lists a new capture file in screenshot.db, tells every window, and opens it in the editor.
@@ -278,28 +333,37 @@ fn add_shot(app: &AppHandle, path: &std::path::Path, created: i64) -> Res<()> {
     Ok(())
 }
 
+/// Writes an image that came from elsewhere (a device screenshot) into the shot storage and
+/// opens it in the editor, like a capture.
+fn import_png(app: &AppHandle, png: &[u8]) -> Res<()> {
+    let created = now_ms();
+    let path = shots_dir(app)?.join(format!("{created}.png"));
+    std::fs::write(&path, png).map_err(err)?;
+    applog::info(&format!("device shot: imported ({} bytes)", png.len()));
+    add_shot(app, &path, created)
+}
+
 /// Windows (and other systems): freeze every monitor, let the user drag a rectangle on our own
 /// overlay, then crop that monitor's image. Blocks this capture thread until the overlay ends, so
 /// CAPTURING stays set until then.
 #[cfg(not(target_os = "macos"))]
-fn capture(app: &AppHandle) -> Res<()> {
-    if let Some(main) = app.get_webview_window("main") {
-        let _ = main.hide();
-    }
-    // Give the window time to disappear before the screens are frozen.
-    std::thread::sleep(Duration::from_millis(250));
+fn capture(app: &AppHandle) -> Res<Outcome> {
+    clear_screen_for_capture(app);
 
-    let screens =
-        overlay::freeze_screens().map_err(|e| format!("Could not capture the screen: {e}"))?;
+    let screens = std::sync::Arc::new(
+        overlay::freeze_screens().map_err(|e| format!("Could not capture the screen: {e}"))?,
+    );
+    applog::info(&format!("capture: screens frozen after {} ms", elapsed_ms()));
     let Some(pick) = overlay::select(app, &screens)? else {
-        return Ok(()); // cancelled (logged by select)
+        return Ok(Outcome::Cancelled); // logged by select
     };
 
     let created = now_ms();
     let path = shots_dir(app)?.join(format!("{created}.png"));
     overlay::save_crop(&screens, &pick, &path)
         .map_err(|e| format!("Could not save the capture: {e}"))?;
-    add_shot(app, &path, created)
+    add_shot(app, &path, created)?;
+    Ok(Outcome::Done)
 }
 
 // ---------- selection overlay (Windows) ----------
@@ -307,11 +371,11 @@ fn capture(app: &AppHandle) -> Res<()> {
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 mod overlay {
     use std::{
-        path::{Path, PathBuf},
+        path::Path,
         sync::{
             atomic::{AtomicU64, Ordering},
             mpsc::{channel, Receiver, RecvTimeoutError, Sender},
-            Mutex,
+            Arc, Mutex,
         },
         time::Duration,
     };
@@ -325,7 +389,7 @@ mod overlay {
         imageops, ExtendedColorType, ImageEncoder, RgbaImage,
     };
 
-    use super::{err, Res};
+    use super::{elapsed_ms, err, Res, CANCEL_PENDING};
     use crate::applog;
 
     /// An overlay left open this long is closed, so a stuck page can never block captures.
@@ -358,7 +422,8 @@ mod overlay {
     /// wakes the capture thread with "cancelled".
     struct Session {
         id: u64,
-        pngs: Vec<PathBuf>,
+        /// The frozen monitors; each overlay page fetches its own as raw RGBA pixels.
+        screens: Arc<Vec<Screen>>,
         done: Sender<Answer>,
         /// An overlay page has drawn its image and shown its window.
         shown: bool,
@@ -367,7 +432,7 @@ mod overlay {
     static SESSION: Mutex<Option<Session>> = Mutex::new(None);
     static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
-    /// Fast PNG compression: the frozen screens are shown at once and deleted afterwards.
+    /// Fast PNG compression.
     fn save_png(image: &RgbaImage, path: &Path) -> Res<()> {
         let file = std::io::BufWriter::new(std::fs::File::create(path).map_err(err)?);
         PngEncoder::new_with_quality(file, CompressionType::Fast, FilterType::Adaptive)
@@ -397,49 +462,44 @@ mod overlay {
     }
 
     /// Shows the overlays and waits until the user drags a rectangle (Some) or cancels (None).
-    pub fn select(app: &AppHandle, screens: &[Screen]) -> Res<Option<Pick>> {
-        let dir = std::env::temp_dir().join("hl-desk-capture");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).map_err(err)?;
-        let pngs: Vec<PathBuf> = (0..screens.len())
-            .map(|i| dir.join(format!("monitor-{i}.png")))
-            .collect();
-        // PNG encoding is the slow part: one thread per monitor.
-        std::thread::scope(|s| {
-            let jobs: Vec<_> = screens
-                .iter()
-                .zip(&pngs)
-                .map(|(screen, png)| s.spawn(move || save_png(&screen.image, png)))
-                .collect();
-            jobs.into_iter().try_for_each(|job| {
-                job.join()
-                    .unwrap_or_else(|_| Err("PNG encoding failed".to_string()))
-            })
-        })
-        .map_err(|e| format!("Could not prepare the capture overlay: {e}"))?;
-
+    /// The windows are transparent: each page shows its dim layer and hint at once, over the
+    /// (still unchanged) screen, then draws the frozen pixels when they arrive, so the user never
+    /// waits for image encoding before the capture visibly starts.
+    pub fn select(app: &AppHandle, screens: &Arc<Vec<Screen>>) -> Res<Option<Pick>> {
         let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = channel();
-        *SESSION.lock().unwrap() = Some(Session { id, pngs, done: tx, shown: false });
+        *SESSION.lock().unwrap() =
+            Some(Session { id, screens: Arc::clone(screens), done: tx, shown: false });
+        // The capture key was pressed again while the screens were being frozen.
+        if CANCEL_PENDING.swap(false, Ordering::SeqCst) {
+            cancel(Some(id), None);
+        }
 
-        let opened = screens
-            .iter()
-            .enumerate()
-            .try_for_each(|(i, screen)| open_window(app, id, i, screen));
+        let opened = if is_open(id) {
+            screens
+                .iter()
+                .enumerate()
+                .try_for_each(|(i, screen)| open_window(app, id, i, screen))
+        } else {
+            Ok(())
+        };
         let result = match opened {
             Ok(()) => {
-                applog::info(&format!("capture: {} overlay window(s) opened", screens.len()));
+                applog::info(&format!(
+                    "capture: {} overlay window(s) opened after {} ms",
+                    screens.len(),
+                    elapsed_ms()
+                ));
                 wait(app, id, &rx)
             }
             Err(e) => Err(format!("Could not open the capture overlay: {e}")),
         };
 
-        // Close this session's overlays and delete the frozen PNGs.
+        // Close this session's overlays.
         end(Some(id));
         for window in windows(app, id) {
             let _ = window.destroy();
         }
-        let _ = std::fs::remove_dir_all(&dir);
         result
     }
 
@@ -464,7 +524,7 @@ mod overlay {
         match answer {
             Ok(Ok(pick)) => Ok(Some(pick)),
             Ok(Err(None)) => {
-                applog::info("capture: cancelled by the user (Esc or right-click)");
+                applog::info("capture: cancelled by the user (Esc, right-click or the capture key)");
                 Ok(None)
             }
             Ok(Err(Some(reason))) => Err(reason),
@@ -488,6 +548,10 @@ mod overlay {
             .collect()
     }
 
+    fn is_open(id: u64) -> bool {
+        matches!(SESSION.lock().unwrap().as_ref(), Some(s) if s.id == id)
+    }
+
     fn is_shown(id: u64) -> bool {
         matches!(SESSION.lock().unwrap().as_ref(), Some(s) if s.id == id && s.shown)
     }
@@ -503,24 +567,29 @@ mod overlay {
         }
     }
 
-    /// One borderless, always-on-top window exactly over the monitor. It stays hidden until its
-    /// page has drawn the frozen image (screenshot_overlay_show).
+    /// One borderless, always-on-top, transparent window exactly over the monitor. It stays
+    /// hidden until its page is ready to draw (screenshot_overlay_show), so there is no white flash.
     fn open_window(app: &AppHandle, id: u64, index: usize, screen: &Screen) -> Res<()> {
-        let window = WebviewWindowBuilder::new(
+        let (w, h) = (screen.image.width(), screen.image.height());
+        let builder = WebviewWindowBuilder::new(
             app,
             format!("overlay-{id}-{index}"),
-            WebviewUrl::App(format!("overlay.html?m={index}").into()),
-        )
-        .title("Capture area")
-        .decorations(false)
-        .shadow(false)
-        .resizable(false)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .visible(false)
-        .focused(false)
-        .build()
-        .map_err(err)?;
+            WebviewUrl::App(format!("overlay.html?m={index}&w={w}&h={h}").into()),
+        );
+        // Transparent until the frozen pixels arrive (macOS never uses this overlay).
+        #[cfg(not(target_os = "macos"))]
+        let builder = builder.transparent(true);
+        let window = builder
+            .title("Capture area")
+            .decorations(false)
+            .shadow(false)
+            .resizable(false)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .visible(false)
+            .focused(false)
+            .build()
+            .map_err(err)?;
         // Closing any overlay another way (Alt+F4) cancels the capture.
         window.on_window_event(move |event| {
             if let WindowEvent::Destroyed = event {
@@ -545,14 +614,16 @@ mod overlay {
         }
     }
 
-    /// The frozen PNG of monitor `index`.
-    pub fn png_path(index: usize) -> Res<PathBuf> {
-        SESSION
+    /// The frozen pixels of monitor `index` (RGBA; width and height are in the page's URL).
+    pub fn frame(index: usize) -> Res<Vec<u8>> {
+        let screens = SESSION
             .lock()
             .unwrap()
             .as_ref()
-            .and_then(|s| s.pngs.get(index).cloned())
-            .ok_or_else(|| "The capture was cancelled.".to_string())
+            .map(|s| Arc::clone(&s.screens))
+            .ok_or_else(|| "The capture was cancelled.".to_string())?;
+        let screen = screens.get(index).ok_or_else(|| format!("no monitor {index}"))?;
+        Ok(screen.image.as_raw().clone())
     }
 
     /// The session an overlay window belongs to (its label is "overlay-<session>-<monitor>"), so
@@ -605,8 +676,8 @@ fn png_size(path: &str) -> Option<(u32, u32)> {
 
 /// Window size (logical points) that shows the image at its natural size, shrunk to fit the screen.
 fn editor_size(app: &AppHandle, px_w: u32, px_h: u32) -> (f64, f64) {
-    const SIDE: f64 = 140.0; // "Drag me" column
-    const BARS: f64 = 100.0; // toolbar + footer
+    const SIDE: f64 = 24.0; // canvas padding
+    const BARS: f64 = 130.0; // toolbar + bottom bar (Drag to share, Copy, Done)
     let (scale, max_w, max_h) = match app.primary_monitor() {
         Ok(Some(m)) => {
             let s = m.scale_factor();
@@ -700,23 +771,31 @@ fn screenshot_open_permission_settings() -> Res<()> {
     Ok(())
 }
 
-/// Overlay page: the frozen PNG of its monitor.
+/// Overlay page: the frozen pixels of its monitor (raw RGBA, no encoding, so they arrive fast).
 #[tauri::command]
 async fn screenshot_overlay_image(index: usize) -> Res<Response> {
-    let read = overlay::png_path(index).and_then(|path| std::fs::read(path).map_err(err));
+    let read = overlay::frame(index);
     match &read {
-        Ok(bytes) => applog::info(&format!("capture: image {index} served ({} bytes)", bytes.len())),
+        Ok(bytes) => applog::info(&format!(
+            "capture: image {index} served ({} bytes) after {} ms",
+            bytes.len(),
+            elapsed_ms()
+        )),
         Err(e) => applog::error(&format!("capture: image {index} not served: {e}")),
     }
     Ok(Response::new(read?))
 }
 
-/// Overlay page: its frozen image is drawn, so show the window and give it the keyboard
-/// (called again when the pointer moves onto another monitor's overlay).
+/// Overlay page: it is ready (dim layer and hint drawn), so show the window and give it the
+/// keyboard (called again when the pointer moves onto another monitor's overlay).
 #[tauri::command]
 fn screenshot_overlay_show(window: WebviewWindow) {
     if overlay::mark_shown() {
-        applog::info(&format!("capture: overlay shown ({})", window.label()));
+        applog::info(&format!(
+            "capture: overlay shown ({}) after {} ms",
+            window.label(),
+            elapsed_ms()
+        ));
     }
     let _ = window.show();
     let _ = window.set_focus();
@@ -820,6 +899,8 @@ fn screenshot_copy(app: AppHandle, request: Request<'_>) -> Res<()> {
     if rgba.len() != width as usize * height as usize * 4 {
         return Err("image size does not match".into());
     }
+    // Our own copy: the device-screenshot watcher must not offer it back.
+    watch::mark_own_write();
     app.clipboard()
         .write_image(&Image::new(rgba, width, height))
         .map_err(err)
@@ -829,6 +910,91 @@ fn screenshot_copy(app: AppHandle, request: Request<'_>) -> Res<()> {
 #[tauri::command]
 fn screenshot_close(window: WebviewWindow) {
     let _ = window.destroy();
+}
+
+// ---------- capture settings (Settings sheet, src/features/screenshot/settings.ts) ----------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CaptureSettings {
+    /// "default" or "device".
+    key: String,
+    /// The device key (Print Screen / Cmd+Shift+4): "off", "ok", "owned" (the OS still uses it),
+    /// "check" (could not tell) or "failed" (could not register it).
+    device_key: &'static str,
+    /// "Mark up in HL Desk" after a device screenshot.
+    markup: bool,
+}
+
+fn capture_settings(app: &AppHandle) -> CaptureSettings {
+    CaptureSettings {
+        key: crate::settings::capture_key(app),
+        device_key: keys::status(app),
+        markup: crate::settings::markup_after_shot(app),
+    }
+}
+
+#[tauri::command]
+async fn screenshot_capture_settings(app: AppHandle) -> CaptureSettings {
+    capture_settings(&app)
+}
+
+/// Chooses the capture key ("default" or "device"), registers it and returns the new state.
+#[tauri::command]
+async fn screenshot_set_capture_key(app: AppHandle, key: String) -> Res<CaptureSettings> {
+    if key != keys::DEFAULT && key != keys::DEVICE {
+        return Err(format!("unknown capture key {key}"));
+    }
+    crate::settings::set_capture_key(&app, &key)?;
+    applog::info(&format!("settings: capture key is now {key}"));
+    keys::apply(&app, &key);
+    let _ = app.emit(KEYS_CHANGED, ());
+    Ok(capture_settings(&app))
+}
+
+/// Turns "Mark up in HL Desk" after a device screenshot on or off.
+#[tauri::command]
+async fn screenshot_set_markup(app: AppHandle, on: bool) -> Res<CaptureSettings> {
+    crate::settings::set_markup_after_shot(&app, on)?;
+    watch::set_on(on);
+    applog::info(&format!("settings: mark up after a device screenshot is now {on}"));
+    Ok(capture_settings(&app))
+}
+
+/// Opens the system setting that owns the device key (Windows: Accessibility > Keyboard;
+/// macOS: Keyboard settings, where Keyboard Shortcuts > Screenshots is).
+#[tauri::command]
+fn screenshot_open_key_settings() -> Res<()> {
+    keys::open_system_settings()
+}
+
+// ---------- toast (toast.html, src/toast/) ----------
+
+/// Toast page: the image behind "Mark up in HL Desk" (PNG bytes).
+#[tauri::command]
+async fn screenshot_toast_image() -> Res<Response> {
+    toast::pending()
+        .map(Response::new)
+        .ok_or_else(|| "The screenshot is no longer available.".to_string())
+}
+
+/// Toast page: "Mark up in HL Desk": stores the image like a capture and opens the editor.
+#[tauri::command]
+async fn screenshot_toast_markup(app: AppHandle, window: WebviewWindow) -> Res<()> {
+    let png = toast::take_pending();
+    let _ = window.destroy();
+    let png = png.ok_or_else(|| "The screenshot is no longer available.".to_string())?;
+    applog::info("device shot: Mark up in HL Desk clicked");
+    import_png(&app, &png).map_err(|e| {
+        applog::error(&format!("device shot: could not open it in the editor: {e}"));
+        e
+    })
+}
+
+/// Toast page: closed (its x, or its timer ran out).
+#[tauri::command]
+fn screenshot_toast_close(window: WebviewWindow) {
+    toast::closed(&window);
 }
 
 /// This feature's commands. Name each one "screenshot_<name>" (for example "screenshot_list")
@@ -849,6 +1015,13 @@ pub fn commands() -> impl Fn(Invoke) -> bool + Send + Sync + 'static {
         screenshot_open,
         screenshot_save,
         screenshot_copy,
-        screenshot_close
+        screenshot_close,
+        screenshot_capture_settings,
+        screenshot_set_capture_key,
+        screenshot_set_markup,
+        screenshot_open_key_settings,
+        screenshot_toast_image,
+        screenshot_toast_markup,
+        screenshot_toast_close
     ]
 }

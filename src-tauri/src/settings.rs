@@ -1,5 +1,6 @@
 //! App settings shared by the shell (not by one feature): <app data>/settings.json holds
-//! "welcome seen". Open at login is kept by the OS itself (tauri-plugin-autostart: a LaunchAgent
+//! "welcome seen" and the screenshot capture settings (capture key, mark up after a device
+//! screenshot; changed through screenshot.rs commands). Open at login is kept by the OS itself (tauri-plugin-autostart: a LaunchAgent
 //! on macOS, the HKCU Run key on Windows), so it is always read from there, never stored here.
 //! Commands are named "settings_<name>" and routed here by lib.rs.
 
@@ -12,10 +13,21 @@ use tauri_plugin_autostart::ManagerExt;
 use crate::applog;
 
 /// What settings.json holds. Unknown or missing fields fall back to the defaults.
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 struct Stored {
     welcome_seen: bool,
+    /// Screenshot capture key: "default" (Ctrl/Cmd+Shift+2 only) or "device" (Print Screen on
+    /// Windows, Cmd+Shift+4 on macOS, plus Ctrl/Cmd+Shift+2). Used by screenshot/keys.rs.
+    capture_key: String,
+    /// Offer "Mark up in HL Desk" after a device screenshot (screenshot/watch.rs). On by default.
+    markup_after_shot: bool,
+}
+
+impl Default for Stored {
+    fn default() -> Self {
+        Stored { welcome_seen: false, capture_key: "default".into(), markup_after_shot: true }
+    }
 }
 
 fn path(app: &AppHandle) -> Option<PathBuf> {
@@ -51,6 +63,28 @@ pub fn first_run(app: &AppHandle) -> bool {
         Err(e) => applog::error(&format!("settings: first run, could not turn on open at login: {e}")),
     }
     true
+}
+
+/// The chosen capture key ("default" or "device"); read by screenshot/keys.rs.
+pub fn capture_key(app: &AppHandle) -> String {
+    load(app).capture_key
+}
+
+pub fn set_capture_key(app: &AppHandle, key: &str) -> Result<(), String> {
+    let mut stored = load(app);
+    stored.capture_key = key.to_string();
+    save(app, &stored)
+}
+
+/// Whether to offer "Mark up in HL Desk" after a device screenshot; read by screenshot/watch.rs.
+pub fn markup_after_shot(app: &AppHandle) -> bool {
+    load(app).markup_after_shot
+}
+
+pub fn set_markup_after_shot(app: &AppHandle, on: bool) -> Result<(), String> {
+    let mut stored = load(app);
+    stored.markup_after_shot = on;
+    save(app, &stored)
 }
 
 #[derive(Serialize)]
