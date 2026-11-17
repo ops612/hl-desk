@@ -52,7 +52,7 @@ function hideWindow(): void {
   getCurrentWindow().hide().catch(() => {});
 }
 
-// ---- Pin: keep the popover open and on top (lib.rs shell_set_pinned); Esc still hides it ----
+// ---- Pin: keep the popover open when it loses focus (lib.rs shell_set_pinned); Esc still hides it ----
 // Remembered in localStorage: a UI preference of this window only (settings.json is shared
 // with the capture-key settings).
 const pinBtn = document.getElementById("pin") as HTMLButtonElement;

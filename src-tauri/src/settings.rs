@@ -4,7 +4,7 @@
 //! on macOS, the HKCU Run key on Windows), so it is always read from there, never stored here.
 //! Commands are named "settings_<name>" and routed here by lib.rs.
 
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Mutex};
 
 use serde::{Deserialize, Serialize};
 use tauri::{ipc::Invoke, AppHandle, Manager};
@@ -20,15 +20,23 @@ struct Stored {
     /// Screenshot capture key: "default" (Ctrl/Cmd+Shift+2 only) or "device" (Print Screen on
     /// Windows, Cmd+Shift+4 on macOS, plus Ctrl/Cmd+Shift+2). Used by screenshot/keys.rs.
     capture_key: String,
-    /// Offer "Mark up in HL Desk" after a device screenshot (screenshot/watch.rs). On by default.
+    /// Offer "Mark up in HL Desk" after a device screenshot (screenshot/watch.rs). On by default
+    /// on Windows; off on macOS, where watching the screenshot folder needs Desktop access.
     markup_after_shot: bool,
 }
 
 impl Default for Stored {
     fn default() -> Self {
-        Stored { welcome_seen: false, capture_key: "default".into(), markup_after_shot: true }
+        Stored {
+            welcome_seen: false,
+            capture_key: "default".into(),
+            markup_after_shot: !cfg!(target_os = "macos"),
+        }
     }
 }
+
+/// Held around every load-modify-save, so two setters cannot undo each other's change.
+static WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 fn path(app: &AppHandle) -> Option<PathBuf> {
     let dir = app.path().app_data_dir().ok()?;
@@ -36,11 +44,51 @@ fn path(app: &AppHandle) -> Option<PathBuf> {
     Some(dir.join("settings.json"))
 }
 
+/// Reads settings.json (missing: the defaults). A file that cannot be parsed is logged; the
+/// values that can still be read are kept, and if none can, the file is copied to
+/// settings.json.bad before a setter writes over it.
 fn load(app: &AppHandle) -> Stored {
-    path(app)
-        .and_then(|p| std::fs::read(p).ok())
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+    let Some(path) = path(app) else {
+        return Stored::default();
+    };
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                applog::error(&format!("settings: could not read settings.json: {e}"));
+            }
+            return Stored::default();
+        }
+    };
+    if let Ok(stored) = serde_json::from_slice::<Stored>(&bytes) {
+        return stored;
+    }
+    applog::error("settings: settings.json could not be parsed");
+    if let Some(obj) = serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()
+        .as_ref()
+        .and_then(|v| v.as_object())
+    {
+        // Valid JSON with a field of the wrong type: keep every field that still reads.
+        let mut stored = Stored::default();
+        if let Some(v) = obj.get("welcomeSeen").and_then(|v| v.as_bool()) {
+            stored.welcome_seen = v;
+        }
+        if let Some(v) = obj.get("captureKey").and_then(|v| v.as_str()) {
+            stored.capture_key = v.to_string();
+        }
+        if let Some(v) = obj.get("markupAfterShot").and_then(|v| v.as_bool()) {
+            stored.markup_after_shot = v;
+        }
+        applog::warn("settings: kept the values that could be read");
+        return stored;
+    }
+    let bad = path.with_file_name("settings.json.bad");
+    match std::fs::copy(&path, &bad) {
+        Ok(_) => applog::warn(&format!("settings: unreadable settings.json copied to {}", bad.display())),
+        Err(e) => applog::error(&format!("settings: could not copy settings.json to {}: {e}", bad.display())),
+    }
+    Stored::default()
 }
 
 fn save(app: &AppHandle, stored: &Stored) -> Result<(), String> {
@@ -49,14 +97,25 @@ fn save(app: &AppHandle, stored: &Stored) -> Result<(), String> {
     std::fs::write(path, json).map_err(|e| e.to_string())
 }
 
+/// Load, change, save, under WRITE_LOCK.
+fn update(app: &AppHandle, change: impl FnOnce(&mut Stored)) -> Result<(), String> {
+    let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut stored = load(app);
+    change(&mut stored);
+    save(app, &stored)
+}
+
 /// Called once at start-up. On the very first run (no settings.json yet) it writes the file and
 /// turns on open at login. Returns true on that first run.
 pub fn first_run(app: &AppHandle) -> bool {
-    if path(app).is_some_and(|p| p.exists()) {
-        return false;
-    }
-    if let Err(e) = save(app, &Stored::default()) {
-        applog::error(&format!("settings: could not write settings.json: {e}"));
+    {
+        let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        if path(app).is_some_and(|p| p.exists()) {
+            return false;
+        }
+        if let Err(e) = save(app, &Stored::default()) {
+            applog::error(&format!("settings: could not write settings.json: {e}"));
+        }
     }
     match app.autolaunch().enable() {
         Ok(()) => applog::info("settings: first run, open at login turned on"),
@@ -71,9 +130,7 @@ pub fn capture_key(app: &AppHandle) -> String {
 }
 
 pub fn set_capture_key(app: &AppHandle, key: &str) -> Result<(), String> {
-    let mut stored = load(app);
-    stored.capture_key = key.to_string();
-    save(app, &stored)
+    update(app, |s| s.capture_key = key.to_string())
 }
 
 /// Whether to offer "Mark up in HL Desk" after a device screenshot; read by screenshot/watch.rs.
@@ -82,9 +139,7 @@ pub fn markup_after_shot(app: &AppHandle) -> bool {
 }
 
 pub fn set_markup_after_shot(app: &AppHandle, on: bool) -> Result<(), String> {
-    let mut stored = load(app);
-    stored.markup_after_shot = on;
-    save(app, &stored)
+    update(app, |s| s.markup_after_shot = on)
 }
 
 #[derive(Serialize)]
@@ -121,9 +176,7 @@ fn settings_set_open_at_login(app: AppHandle, on: bool) -> Result<bool, String> 
 /// "Got it" / "Try a capture" (true), or "Show welcome again" in Settings (false).
 #[tauri::command]
 fn settings_set_welcome_seen(app: AppHandle, seen: bool) -> Result<(), String> {
-    let mut stored = load(&app);
-    stored.welcome_seen = seen;
-    save(&app, &stored)
+    update(&app, |s| s.welcome_seen = seen)
 }
 
 pub fn commands() -> impl Fn(Invoke) -> bool + Send + Sync + 'static {

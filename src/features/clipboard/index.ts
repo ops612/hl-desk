@@ -28,8 +28,7 @@ const DELETE_ICON =
 const isMac = navigator.userAgent.includes("Mac");
 /** How long "Item deleted · Undo" (or "N older items removed · Undo") stays. */
 const UNDO_MS = 5000;
-/** How long "Copied" shows before the popover hides; pinned, it stays open and the notice longer. */
-const COPIED_MS = 700;
+/** Pinned only: how long "Copied. Click your app, then Ctrl+V" shows (unpinned, the popover hides at once). */
 const COPIED_PINNED_MS = 1500;
 
 export function mount(el: HTMLElement): void {
@@ -40,7 +39,7 @@ export function mount(el: HTMLElement): void {
       <span class="cb-undo-text">Item deleted</span>
       <button type="button">Undo</button>
     </div>
-    <div class="toast" role="status" hidden>Copied, press <kbd>${isMac ? "⌘V" : "Ctrl+V"}</kbd> to paste</div>
+    <div class="toast" role="status" hidden>Copied. Click your app, then <kbd>${isMac ? "⌘V" : "Ctrl+V"}</kbd></div>
     <footer class="footer">
       <span>Click to copy · ${isMac ? "⌘P" : "Ctrl+P"} pin</span>
       <label class="cb-keep">Keep <select class="select" aria-label="Keep items for"></select></label>
@@ -141,22 +140,23 @@ export function mount(el: HTMLElement): void {
     render();
   }
 
-  /** Copies, shows "Copied, press Ctrl+V to paste", then hides the popover (unless pinned). */
+  /** Copies. Unpinned, hides the popover at once so Ctrl+V goes to the user's app; pinned, it
+   *  stays open and shows "Copied. Click your app, then Ctrl+V". */
   async function copy(item: Item): Promise<void> {
     await invoke("clipboard_copy", { id: item.id });
     search.value = "";
     selected = 0;
     void refresh();
-    const pinned = document.body.dataset.pinned === "true";
-    toast.hidden = false;
     clearTimeout(copiedTimer);
-    copiedTimer = window.setTimeout(
-      () => {
-        toast.hidden = true;
-        if (!pinned) getCurrentWindow().hide().catch(() => {});
-      },
-      pinned ? COPIED_PINNED_MS : COPIED_MS,
-    );
+    if (document.body.dataset.pinned !== "true") {
+      toast.hidden = true;
+      getCurrentWindow().hide().catch(() => {});
+      return;
+    }
+    toast.hidden = false;
+    copiedTimer = window.setTimeout(() => {
+      toast.hidden = true;
+    }, COPIED_PINNED_MS);
   }
 
   async function togglePin(item: Item): Promise<void> {
@@ -294,10 +294,19 @@ export function mount(el: HTMLElement): void {
   // New copy recorded, or old items deleted by the timer.
   void listen("clipboard://changed", () => void refresh());
 
-  // Window shown again: start fresh with the newest item selected.
+  // Window shown again: start fresh with an empty search and the newest item selected.
+  // Window hidden or left: the undo bar stops its timer while the pointer is on it, and the
+  // pointerleave may never come, so restart the 5 s and the pending delete really happens.
   void getCurrentWindow().onFocusChanged(({ payload: focused }) => {
-    if (!focused) return;
+    if (!focused) {
+      if (undo) {
+        clearTimeout(undo.timer);
+        undo.timer = undoTimer();
+      }
+      return;
+    }
     if (document.body.dataset.pinned !== "true") toast.hidden = true;
+    search.value = "";
     selected = 0;
     if (!el.hidden) search.focus();
     void refresh();

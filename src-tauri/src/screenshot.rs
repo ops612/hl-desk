@@ -229,9 +229,16 @@ pub(crate) fn start_capture(app: AppHandle) {
             Ok(Outcome::Cancelled) => toast::notice(&app, "cancelled"),
             Err(e) => report_failure(&app, &e),
         }
-        CANCEL_PENDING.store(false, Ordering::SeqCst);
-        CAPTURING.store(false, Ordering::SeqCst);
+        // Windows: capture() ended the capture itself when the overlay closed.
+        #[cfg(target_os = "macos")]
+        end_capturing();
     });
+}
+
+/// The capture is over for the capture key: a press from now on starts a new one.
+fn end_capturing() {
+    CANCEL_PENDING.store(false, Ordering::SeqCst);
+    CAPTURING.store(false, Ordering::SeqCst);
 }
 
 /// Hides the popover and any toast before the screen is captured, waiting only if one was showing.
@@ -373,17 +380,22 @@ fn import_png(app: &AppHandle, png: &[u8]) -> Res<()> {
 }
 
 /// Windows (and other systems): freeze every monitor, let the user drag a rectangle on our own
-/// overlay, then crop that monitor's image. Blocks this capture thread until the overlay ends, so
-/// CAPTURING stays set until then.
+/// overlay, then crop that monitor's image. CAPTURING stays set while the overlay is open and is
+/// cleared as soon as it closes (before saving and opening the editor), so a key press then
+/// starts a new capture instead of being ignored.
 #[cfg(not(target_os = "macos"))]
 fn capture(app: &AppHandle) -> Res<Outcome> {
-    clear_screen_for_capture(app);
-
-    let screens = std::sync::Arc::new(
-        overlay::freeze_screens().map_err(|e| format!("Could not capture the screen: {e}"))?,
-    );
-    applog::info(&format!("capture: screens frozen after {} ms", elapsed_ms()));
-    let Some(pick) = overlay::select(app, &screens)? else {
+    let selection = (|| {
+        clear_screen_for_capture(app);
+        let screens = std::sync::Arc::new(
+            overlay::freeze_screens().map_err(|e| format!("Could not capture the screen: {e}"))?,
+        );
+        applog::info(&format!("capture: screens frozen after {} ms", elapsed_ms()));
+        let pick = overlay::select(app, &screens)?;
+        Ok::<_, String>(pick.map(|pick| (screens, pick)))
+    })();
+    end_capturing();
+    let Some((screens, pick)) = selection? else {
         return Ok(Outcome::Cancelled); // logged by select
     };
 
@@ -965,13 +977,17 @@ struct CaptureSettings {
     device_key: &'static str,
     /// "Mark up in HL Desk" after a device screenshot.
     markup: bool,
+    /// macOS: mark up is on but the screenshot folder cannot be read (Desktop access refused).
+    folder_blocked: bool,
 }
 
 fn capture_settings(app: &AppHandle) -> CaptureSettings {
+    let markup = crate::settings::markup_after_shot(app);
     CaptureSettings {
         key: crate::settings::capture_key(app),
         device_key: keys::status(app),
-        markup: crate::settings::markup_after_shot(app),
+        markup,
+        folder_blocked: markup && watch::folder_blocked(),
     }
 }
 
@@ -993,13 +1009,40 @@ async fn screenshot_set_capture_key(app: AppHandle, key: String) -> Res<CaptureS
     Ok(capture_settings(&app))
 }
 
-/// Turns "Mark up in HL Desk" after a device screenshot on or off.
+/// Turns "Mark up in HL Desk" after a device screenshot on or off. macOS, turning it on: looks
+/// at the screenshot folder once first (macOS asks for Desktop access and this waits for the
+/// answer); the result shows as `folder_blocked`.
 #[tauri::command]
 async fn screenshot_set_markup(app: AppHandle, on: bool) -> Res<CaptureSettings> {
     crate::settings::set_markup_after_shot(&app, on)?;
+    #[cfg(target_os = "macos")]
+    {
+        if on {
+            watch::check_folder();
+        }
+    }
     watch::set_on(on);
     applog::info(&format!("settings: mark up after a device screenshot is now {on}"));
     Ok(capture_settings(&app))
+}
+
+/// System Settings > Privacy & Security > Files and Folders.
+#[cfg(target_os = "macos")]
+const FILES_AND_FOLDERS_PANE: &str =
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders";
+
+/// macOS: opens System Settings at Files and Folders (screenshot folder access). Does nothing elsewhere.
+#[tauri::command]
+fn screenshot_open_files_settings() -> Res<()> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("/usr/bin/open")
+            .arg(FILES_AND_FOLDERS_PANE)
+            .status()
+            .map_err(err)?;
+        applog::info("device shot: opened System Settings > Files and Folders");
+    }
+    Ok(())
 }
 
 /// Opens the system setting that owns the device key (Windows: Accessibility > Keyboard;
@@ -1022,14 +1065,16 @@ async fn screenshot_toast_image() -> Res<Response> {
 /// Toast page: "Mark up in HL Desk": stores the image like a capture and opens the editor.
 #[tauri::command]
 async fn screenshot_toast_markup(app: AppHandle, window: WebviewWindow) -> Res<()> {
-    let png = toast::take_pending();
-    let _ = window.destroy();
-    let png = png.ok_or_else(|| "The screenshot is no longer available.".to_string())?;
     applog::info("device shot: Mark up in HL Desk clicked");
-    import_png(&app, &png).map_err(|e| {
-        applog::error(&format!("device shot: could not open it in the editor: {e}"));
-        e
-    })
+    let result = toast::take_pending()
+        .ok_or_else(|| "The screenshot is no longer available.".to_string())
+        .and_then(|png| import_png(&app, &png));
+    // Never fail silently: the main window shows the error before the toast goes.
+    if let Err(e) = &result {
+        report_failure(&app, &format!("Could not open the screenshot in the editor: {e}"));
+    }
+    let _ = window.destroy();
+    result
 }
 
 /// Toast page: it has drawn and its content is `height` CSS pixels tall, so size the window to
@@ -1068,6 +1113,7 @@ pub fn commands() -> impl Fn(Invoke) -> bool + Send + Sync + 'static {
         screenshot_capture_settings,
         screenshot_set_capture_key,
         screenshot_set_markup,
+        screenshot_open_files_settings,
         screenshot_open_key_settings,
         screenshot_toast_image,
         screenshot_toast_markup,

@@ -1,12 +1,16 @@
-//! "Mark up in HL Desk" after a device screenshot (setting, on by default). When the computer's
-//! own screenshot tool makes a new screenshot, a toast offers to open it in the editor.
+//! "Mark up in HL Desk" after a device screenshot (setting: on by default on Windows, off on
+//! macOS). When the computer's own screenshot tool makes a new screenshot, a toast offers to open
+//! it in the editor.
 //! - Windows: Win+Shift+S / Snipping Tool put the image on the clipboard. A thread checks the
 //!   clipboard's sequence number twice a second (no clipboard access while nothing changes) and,
-//!   when it changed and holds an image HL Desk did not put there, reads it and shows the toast.
+//!   when it changed and holds an image HL Desk did not put there whose owner is the snipping
+//!   tool, reads it and shows the toast.
 //!   Clipboard history (clipboard.rs) stays text only: images are never stored there.
 //! - macOS: Cmd+Shift+3/4/5 save a file in the screenshot folder (`defaults read
-//!   com.apple.screencapture location`, default Desktop). A thread lists that folder every
-//!   1.5 s while the setting is on and offers each new screenshot PNG once it is fully written.
+//!   com.apple.screencapture location`, default Desktop). Only while the setting is on, a thread
+//!   lists that folder every 1.5 s and offers each new screenshot (PNG, JPEG or HEIC) once it is
+//!   fully written. The folder is never touched while the setting is off (macOS asks for Desktop
+//!   access the first time; Settings explains that when the user turns it on).
 
 use std::{
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
@@ -22,6 +26,27 @@ use crate::applog;
 static ON: AtomicBool = AtomicBool::new(true);
 /// When HL Desk last wrote an image to the clipboard itself (editor Copy), Unix ms.
 static OWN_WRITE_AT: AtomicU64 = AtomicU64::new(0);
+/// macOS: the screenshot folder could not be read last time (Desktop access refused).
+static FOLDER_BLOCKED: AtomicBool = AtomicBool::new(false);
+
+/// macOS: true if the last look at the screenshot folder failed. Always false elsewhere.
+pub fn folder_blocked() -> bool {
+    FOLDER_BLOCKED.load(Ordering::SeqCst)
+}
+
+/// macOS: lists the screenshot folder once (macOS asks for Desktop access the first time and
+/// waits for the answer). Returns true if it can be read.
+#[cfg(target_os = "macos")]
+pub fn check_folder() -> bool {
+    let dir = mac::folder();
+    let result = std::fs::read_dir(&dir);
+    match &result {
+        Ok(_) => applog::info(&format!("device shot: {} can be read", dir.display())),
+        Err(e) => applog::warn(&format!("device shot: cannot read {}: {e}", dir.display())),
+    }
+    FOLDER_BLOCKED.store(result.is_err(), Ordering::SeqCst);
+    result.is_ok()
+}
 
 pub fn init(app: &AppHandle) {
     let on = crate::settings::markup_after_shot(app);
@@ -51,10 +76,17 @@ fn watch(app: AppHandle) {
     use std::hash::{Hash, Hasher};
     use tauri_plugin_clipboard_manager::ClipboardExt;
     use windows_sys::Win32::System::DataExchange::{
-        GetClipboardSequenceNumber, IsClipboardFormatAvailable,
+        GetClipboardSequenceNumber, IsClipboardFormatAvailable, RegisterClipboardFormatW,
     };
     // CF_BITMAP, CF_DIB, CF_DIBV5.
     const IMAGE_FORMATS: [u32; 3] = [2, 8, 17];
+    const CF_UNICODETEXT: u32 = 13;
+    /// Windows' screenshot tools (Win+Shift+S, Print Screen, Snipping Tool).
+    const SNIP_TOOLS: [&str; 2] = ["ScreenClippingHost.exe", "SnippingTool.exe"];
+
+    let html_name: Vec<u16> = "HTML Format".encode_utf16().chain(Some(0)).collect();
+    // SAFETY: a null-terminated UTF-16 name; returns the format id (0 on failure).
+    let html_format = unsafe { RegisterClipboardFormatW(html_name.as_ptr()) };
 
     // SAFETY: GetClipboardSequenceNumber only reads a counter; it needs no open clipboard.
     let seq = || unsafe { GetClipboardSequenceNumber() };
@@ -80,6 +112,34 @@ fn watch(app: AppHandle) {
         if own_write_recent() {
             applog::info("device shot: clipboard image is our own copy, skipped");
             continue;
+        }
+        // Only Windows' own snipping tool counts as a device screenshot; an image copied from a
+        // browser or Office is not offered. The bitmap is read only once this passes.
+        match clipboard_owner_exe() {
+            Some(exe) => {
+                let snip = SNIP_TOOLS.iter().any(|t| exe.eq_ignore_ascii_case(t));
+                applog::info(&format!(
+                    "device shot: clipboard image from {exe}, {}",
+                    if snip { "qualifies" } else { "skipped (not the snipping tool)" }
+                ));
+                if !snip {
+                    continue;
+                }
+            }
+            None => {
+                // Owner unknown: an image that came with text or HTML is a copy from an app.
+                // SAFETY: as above, only reads the clipboard's format list.
+                let with_text = [CF_UNICODETEXT, html_format]
+                    .iter()
+                    .any(|&f| f != 0 && unsafe { IsClipboardFormatAvailable(f) } != 0);
+                applog::info(&format!(
+                    "device shot: clipboard owner unknown, {}",
+                    if with_text { "skipped (image came with text or HTML)" } else { "qualifies (image only)" }
+                ));
+                if with_text {
+                    continue;
+                }
+            }
         }
         let image = match app.clipboard().read_image() {
             Ok(image) => image,
@@ -107,16 +167,52 @@ fn watch(app: AppHandle) {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn watch(app: AppHandle) {
-    use std::{
-        collections::HashSet,
-        path::{Path, PathBuf},
-        time::Instant,
+/// The file name (for example "SnippingTool.exe") of the process that owns the clipboard, or
+/// None if it cannot be told.
+#[cfg(windows)]
+fn clipboard_owner_exe() -> Option<String> {
+    use windows_sys::Win32::{
+        Foundation::CloseHandle,
+        System::{
+            DataExchange::GetClipboardOwner,
+            Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION},
+        },
+        UI::WindowsAndMessaging::GetWindowThreadProcessId,
     };
+    // SAFETY: plain Win32 queries with valid out-pointers; the process handle is closed below.
+    unsafe {
+        let owner = GetClipboardOwner();
+        if owner.is_null() {
+            return None;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(owner, &mut pid);
+        if pid == 0 {
+            return None;
+        }
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return None;
+        }
+        let mut buf = [0u16; 1024];
+        let mut len = buf.len() as u32;
+        // 0: PROCESS_NAME_WIN32, a normal path.
+        let ok = QueryFullProcessImageNameW(process, 0, buf.as_mut_ptr(), &mut len);
+        CloseHandle(process);
+        if ok == 0 {
+            return None;
+        }
+        let path = String::from_utf16_lossy(&buf[..len as usize]);
+        path.rsplit('\\').next().map(str::to_string)
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod mac {
+    use std::path::{Path, PathBuf};
 
     /// The folder macOS saves screenshots to.
-    fn folder() -> PathBuf {
+    pub fn folder() -> PathBuf {
         let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
         let set = std::process::Command::new("/usr/bin/defaults")
             .args(["read", "com.apple.screencapture", "location"])
@@ -138,13 +234,48 @@ fn watch(app: AppHandle) {
         }
     }
 
-    fn pngs(dir: &Path) -> std::io::Result<HashSet<PathBuf>> {
+    /// The image types macOS can save screenshots as (`defaults write com.apple.screencapture type`).
+    const TYPES: [&str; 4] = ["png", "jpg", "jpeg", "heic"];
+
+    pub fn is_png(path: &Path) -> bool {
+        path.extension().is_some_and(|x| x.eq_ignore_ascii_case("png"))
+    }
+
+    pub fn images(dir: &Path) -> std::io::Result<std::collections::HashSet<PathBuf>> {
         Ok(std::fs::read_dir(dir)?
             .filter_map(Result::ok)
             .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("png")))
+            .filter(|p| {
+                p.extension()
+                    .is_some_and(|x| TYPES.iter().any(|t| x.eq_ignore_ascii_case(t)))
+            })
             .collect())
     }
+
+    /// A JPEG or HEIC screenshot as PNG (the editor and the shot store use PNG), made by macOS's
+    /// own `sips` into a temporary file.
+    pub fn to_png(path: &Path) -> Option<Vec<u8>> {
+        let out = std::env::temp_dir().join(format!("hl-desk-shot-{}.png", super::super::now_ms()));
+        let converted = std::process::Command::new("/usr/bin/sips")
+            .args(["-s", "format", "png"])
+            .arg(path)
+            .arg("--out")
+            .arg(&out)
+            .output()
+            .is_ok_and(|o| o.status.success());
+        let png = if converted { std::fs::read(&out).ok() } else { None };
+        let _ = std::fs::remove_file(&out);
+        png
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn watch(app: AppHandle) {
+    use std::{
+        collections::HashSet,
+        path::{Path, PathBuf},
+        time::Instant,
+    };
 
     /// macOS marks its screenshots with kMDItemIsScreenCapture; the name is a fallback.
     fn is_screenshot(path: &Path) -> bool {
@@ -157,13 +288,14 @@ fn watch(app: AppHandle) {
         marked || name.starts_with("Screenshot") || name.starts_with("Screen Shot")
     }
 
-    /// Waits until the file stops growing (macOS writes it after its own thumbnail goes away).
+    /// Waits until the file stops growing (macOS writes it after its own thumbnail goes away),
+    /// then returns it as PNG.
     fn read_when_complete(path: &Path) -> Option<Vec<u8>> {
         let mut last = 0;
         for _ in 0..20 {
             let len = std::fs::metadata(path).ok()?.len();
             if len > 0 && len == last {
-                return std::fs::read(path).ok();
+                return if mac::is_png(path) { std::fs::read(path).ok() } else { mac::to_png(path) };
             }
             last = len;
             thread::sleep(Duration::from_millis(300));
@@ -171,10 +303,9 @@ fn watch(app: AppHandle) {
         None
     }
 
-    // Do not touch the folder during start-up (macOS may ask once for Desktop access).
-    thread::sleep(Duration::from_secs(3));
     let mut known: Option<(PathBuf, HashSet<PathBuf>)> = None;
-    let mut dir = folder();
+    // The folder is looked up only while the setting is on, so nothing touches it at launch.
+    let mut dir: Option<PathBuf> = None;
     let mut dir_checked = Instant::now();
     let mut warned = false;
     loop {
@@ -183,13 +314,19 @@ fn watch(app: AppHandle) {
             known = None;
             continue;
         }
-        if dir_checked.elapsed() > Duration::from_secs(30) {
-            dir = folder();
+        if dir.is_none() || dir_checked.elapsed() > Duration::from_secs(30) {
+            dir = Some(mac::folder());
             dir_checked = Instant::now();
         }
-        let files = match pngs(&dir) {
-            Ok(files) => files,
+        let Some(dir) = dir.clone() else { continue };
+        let files = match mac::images(&dir) {
+            Ok(files) => {
+                FOLDER_BLOCKED.store(false, Ordering::SeqCst);
+                warned = false;
+                files
+            }
             Err(e) => {
+                FOLDER_BLOCKED.store(true, Ordering::SeqCst);
                 if !warned {
                     applog::warn(&format!("device shot: cannot read {}: {e}", dir.display()));
                     warned = true;
@@ -213,7 +350,7 @@ fn watch(app: AppHandle) {
             applog::info(&format!("device shot: new screenshot {}", path.display()));
             match read_when_complete(&path) {
                 Some(png) => super::toast::offer(&app, png),
-                None => applog::warn("device shot: the screenshot file was not complete in time"),
+                None => applog::warn("device shot: the screenshot file was not complete in time, or could not be converted"),
             }
         }
     }

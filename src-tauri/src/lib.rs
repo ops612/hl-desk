@@ -33,15 +33,14 @@ static BLUR_HIDDEN_AT: AtomicU64 = AtomicU64::new(0);
 /// Windows may refuse the focus to a window opened at start-up (first run, welcome card), and
 /// hiding it then would mean the user never sees it.
 static SHOWN_AT: AtomicU64 = AtomicU64::new(0);
-/// The header's pin button: while pinned the main window stays on top and does not hide on
-/// blur (Esc and the tray icon still hide it). main.ts remembers the choice and sets it at start.
+/// The header's pin button: while pinned the main window does not hide on blur (Esc and the
+/// tray icon still hide it). It is always on top either way (tauri.conf.json alwaysOnTop).
+/// main.ts remembers the choice and sets it at start.
 static PINNED: AtomicBool = AtomicBool::new(false);
 
 #[tauri::command]
-fn shell_set_pinned(app: AppHandle, pinned: bool) -> Result<(), String> {
+fn shell_set_pinned(pinned: bool) {
     PINNED.store(pinned, Ordering::SeqCst);
-    let window = app.get_webview_window("main").ok_or("no main window")?;
-    window.set_always_on_top(pinned).map_err(|e| e.to_string())
 }
 
 fn shell_handlers() -> impl Fn(Invoke) -> bool + Send + Sync + 'static {

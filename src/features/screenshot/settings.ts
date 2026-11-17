@@ -7,12 +7,16 @@ import "./settings.css";
 
 /** "off" | "ok" | "owned" (the system still uses the key) | "check" (could not tell) | "failed". */
 type DeviceKey = "off" | "ok" | "owned" | "check" | "failed";
-type CaptureSettings = { key: "default" | "device"; deviceKey: DeviceKey; markup: boolean };
+/** folderBlocked: macOS, mark up is on but the screenshot folder cannot be read. */
+type CaptureSettings = { key: "default" | "device"; deviceKey: DeviceKey; markup: boolean; folderBlocked: boolean };
 
 const isMac = navigator.userAgent.includes("Mac");
 const DEFAULT_KEY = isMac ? "⌘⇧2" : "Ctrl+Shift+2";
 const DEVICE_KEY = isMac ? "⌘⇧4" : "Print Screen";
 const OPEN_LABEL = isMac ? "Open Keyboard Settings" : "Open keyboard settings";
+const MARKUP_HINT = `After ${isMac ? "⌘⇧4" : "Win+Shift+S"}, a preview in the corner offers to open it in the editor.`;
+/** macOS, while turning mark up on: the Desktop access prompt comes next. */
+const MARKUP_ASKING = "macOS will ask to let HL Desk see your Desktop, where screenshots are saved. Click Allow.";
 
 /** The one-line hint under the capture key, by state of the device key. */
 function note(state: DeviceKey): string {
@@ -58,7 +62,11 @@ export function mountCaptureSettings(el: HTMLElement): void {
       <span>Mark up in HL Desk after a device screenshot</span>
       <input class="switch cap-markup" type="checkbox" role="switch" />
     </label>
-    <p class="hint cap-markup-hint">After ${isMac ? "⌘⇧4" : "Win+Shift+S"}, a preview in the corner offers to open it in the editor.</p>
+    <p class="hint cap-markup-hint">${MARKUP_HINT}</p>
+    <div class="cap-note warn cap-folder" hidden>
+      <p class="hint">HL Desk can't read your screenshots folder.</p>
+      <button class="btn cap-folder-open" type="button">Open Privacy Settings</button>
+    </div>
     <p class="setting-error cap-error" role="alert" hidden></p>`;
 
   const keySelect = el.querySelector<HTMLSelectElement>(".cap-key")!;
@@ -66,6 +74,8 @@ export function mountCaptureSettings(el: HTMLElement): void {
   const noteText = el.querySelector<HTMLElement>(".cap-note-text")!;
   const openBtn = el.querySelector<HTMLButtonElement>(".cap-open")!;
   const markup = el.querySelector<HTMLInputElement>(".cap-markup")!;
+  const markupHint = el.querySelector<HTMLElement>(".cap-markup-hint")!;
+  const folderBox = el.querySelector<HTMLElement>(".cap-folder")!;
   const error = el.querySelector<HTMLElement>(".cap-error")!;
 
   const showError = (e: unknown) => {
@@ -77,6 +87,8 @@ export function mountCaptureSettings(el: HTMLElement): void {
     error.hidden = true;
     keySelect.value = s.key;
     markup.checked = s.markup;
+    markupHint.textContent = MARKUP_HINT;
+    folderBox.hidden = !s.folderBlocked;
     noteBox.hidden = s.key !== "device";
     noteText.textContent = note(s.deviceKey);
     // The button only where the user has something to change in the system.
@@ -95,6 +107,8 @@ export function mountCaptureSettings(el: HTMLElement): void {
       });
   });
   markup.addEventListener("change", () => {
+    // Turning it on looks at the screenshot folder; macOS asks for Desktop access the first time.
+    if (isMac && markup.checked) markupHint.textContent = MARKUP_ASKING;
     invoke<CaptureSettings>("screenshot_set_markup", { on: markup.checked })
       .then(show)
       .catch((e) => {
@@ -104,6 +118,9 @@ export function mountCaptureSettings(el: HTMLElement): void {
   });
   openBtn.addEventListener("click", () => {
     invoke("screenshot_open_key_settings").catch(showError);
+  });
+  el.querySelector(".cap-folder-open")!.addEventListener("click", () => {
+    invoke("screenshot_open_files_settings").catch(showError);
   });
 
   // The user may change the system setting and come back: check again whenever HL Desk is shown.
