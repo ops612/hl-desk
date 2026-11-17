@@ -53,7 +53,26 @@ Shared files (change only in a separate, reviewed PR): `src/main.ts` (tabs), `sr
 `tauri.conf.json`, `src-tauri/capabilities/default.json`, `src-tauri/Info.plist`.
 
 - **Front end:** `src/features/<feature>/index.ts` exports `mount(el)`. The tab calls it once, the
-  first time it is shown, with the tab's panel element.
+  first time it is shown, with the tab's panel element. The panel is a flex column filling the
+  popover (about 380 x 520); a feature may import its own CSS file from its folder.
+- **Shell (`index.html`, `src/main.ts`, `src/styles.css`):** header with the "HL DESK" wordmark and a
+  settings sheet (shortcuts, version, Quit), the segmented tab control (arrow keys, Cmd+1/2/3, last
+  tab kept in localStorage), and Esc to hide the window. Esc is handled on `document` in the bubble
+  phase: a feature that wants Esc first (for example to clear its search) handles it on its own
+  element and calls `preventDefault()`. When a tab is shown again, the element in its panel marked
+  `data-autofocus` gets focus.
+- **Theme tokens** (CSS variables on `:root`, values in `docs/ui.md`): `--ink`, `--muted`, `--border`,
+  `--bg`, `--surface`, `--indigo`, `--indigo-hover`, `--indigo-tint`, `--red`, plus `--radius` (10px)
+  and `--radius-sm` (8px). Font: IBM Plex Sans 400/500/600 bundled via `@fontsource/ibm-plex-sans`.
+- **Shared classes** (`src/styles.css`):
+  - `.btn-primary`: the one indigo-filled button per view. `.btn`: plain bordered button.
+    `.icon-btn`: 28px square icon button (put an `aria-label` on it).
+  - `.field`: text input or `textarea`, with the indigo focus ring.
+  - `.toolbar`: a padded flex row, for search plus buttons at the top of a view.
+  - `.scroll`: the part of a view that scrolls (flex: 1).
+  - `.row`: a 12px list row (a `button` or `div`); `.row.selected` is the keyboard-selected row.
+  - `.hint`: 11px muted text. `.empty`: centred empty-state message.
+  - `.footer`: the bottom hint line of a panel (11px, grey band, pushed to the bottom).
 - **Rust:** `<feature>.rs` has `init(app)`, called once at start-up, and `commands()`, which returns
   `tauri::generate_handler![...]`. To add a command, write `#[tauri::command] fn <feature>_<name>(...)`
   in the feature file and list it in that `generate_handler!`. `lib.rs` routes every command by its

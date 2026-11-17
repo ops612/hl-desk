@@ -7,16 +7,46 @@
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
-    <nav class="tabs" role="tablist">
-      <button role="tab" data-tab="clipboard" aria-selected="true">Clipboard</button>
-      <button role="tab" data-tab="screenshot" aria-selected="false">Screenshot</button>
-      <button role="tab" data-tab="notes" aria-selected="false">Notes</button>
+    <header class="app-header">
+      <span class="wordmark">HL DESK</span>
+      <button class="icon-btn" id="settings-open" type="button" aria-label="Shortcuts and settings"
+        aria-haspopup="dialog" aria-expanded="false" aria-controls="settings">
+        <!-- Gear icon from Feather (MIT). -->
+        <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor"
+          stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3" />
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+        </svg>
+      </button>
+    </header>
+
+    <nav class="segmented" role="tablist" aria-label="Sections">
+      <button role="tab" type="button" id="tab-clipboard" data-tab="clipboard" aria-controls="panel-clipboard" aria-selected="true">Clipboard</button>
+      <button role="tab" type="button" id="tab-screenshot" data-tab="screenshot" aria-controls="panel-screenshot" aria-selected="false" tabindex="-1">Screenshot</button>
+      <button role="tab" type="button" id="tab-notes" data-tab="notes" aria-controls="panel-notes" aria-selected="false" tabindex="-1">Notes</button>
     </nav>
+
     <main>
-      <section role="tabpanel" id="panel-clipboard"></section>
-      <section role="tabpanel" id="panel-screenshot" hidden></section>
-      <section role="tabpanel" id="panel-notes" hidden></section>
+      <section role="tabpanel" id="panel-clipboard" aria-labelledby="tab-clipboard"></section>
+      <section role="tabpanel" id="panel-screenshot" aria-labelledby="tab-screenshot" hidden></section>
+      <section role="tabpanel" id="panel-notes" aria-labelledby="tab-notes" hidden></section>
     </main>
+
+    <div class="sheet" id="settings" role="dialog" aria-modal="true" aria-labelledby="settings-title" hidden>
+      <div class="sheet-head">
+        <h2 id="settings-title">Shortcuts</h2>
+        <button class="icon-btn" id="settings-close" type="button" aria-label="Close">
+          <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" fill="none" stroke="currentColor"
+            stroke-width="1.5" stroke-linecap="round"><path d="M3 3l8 8M11 3l-8 8" /></svg>
+        </button>
+      </div>
+      <dl class="shortcuts" id="shortcuts"></dl>
+      <div class="sheet-foot">
+        <span class="hint" id="app-version">HL Desk</span>
+        <button class="btn" id="quit" type="button">Quit HL Desk</button>
+      </div>
+    </div>
+
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

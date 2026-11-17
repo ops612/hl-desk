@@ -101,8 +101,12 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Closing the window only hides it; the app keeps running in the menu bar / tray.
+            // Closing the main window only hides it; the app keeps running in the menu bar / tray.
+            // Other windows (the screenshot editor) close normally.
             if let WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() != "main" {
+                    return;
+                }
                 api.prevent_close();
                 let _ = window.hide();
             }
