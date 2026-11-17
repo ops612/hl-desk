@@ -11,7 +11,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{ipc::Invoke, AppHandle, Emitter, Manager, State};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
@@ -26,7 +26,7 @@ struct Clipboard {
     skip_hash: Mutex<Option<u64>>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Item {
     id: i64,
@@ -292,8 +292,8 @@ fn clipboard_list(state: State<'_, Clipboard>, query: Option<String>) -> Result<
     items
 }
 
-/// Puts an item back on the clipboard (without recording it again) and hides the window,
-/// so the user can paste straight into the app they came from.
+/// Puts an item back on the clipboard (without recording it again). The front end shows
+/// "Copied" and then hides the window, so the user can paste into the app they came from.
 #[tauri::command]
 fn clipboard_copy(app: AppHandle, state: State<'_, Clipboard>, id: i64) -> Result<(), String> {
     let text: String = state
@@ -306,9 +306,6 @@ fn clipboard_copy(app: AppHandle, state: State<'_, Clipboard>, id: i64) -> Resul
     if let Err(e) = app.clipboard().write_text(text) {
         *state.skip_hash.lock().unwrap() = None;
         return Err(e.to_string());
-    }
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.hide();
     }
     Ok(())
 }
@@ -339,20 +336,97 @@ fn clipboard_get_settings(state: State<'_, Clipboard>) -> Settings {
     Settings { keep_hours: keep_hours(&state.db.lock().unwrap()) }
 }
 
-#[tauri::command]
-fn clipboard_set_keep_hours(state: State<'_, Clipboard>, hours: i64) -> Result<(), String> {
+fn check_hours(hours: i64) -> Result<(), String> {
     if !(1..=720).contains(&hours) {
         return Err("Keep time must be between 1 and 720 hours".into());
     }
-    let conn = state.db.lock().unwrap();
+    Ok(())
+}
+
+fn store_keep_hours(conn: &Connection, hours: i64) -> rusqlite::Result<usize> {
     conn.execute(
         "INSERT INTO settings (key, value) VALUES ('keep_hours', ?1)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         params![hours],
     )
-    .map_err(err)?;
-    delete_expired(&conn);
-    Ok(())
+}
+
+/// Sets the keep time and deletes the unpinned items it no longer covers. Returns those items,
+/// so the front end can offer "N older items removed · Undo" (clipboard_undo_keep).
+#[tauri::command]
+fn clipboard_set_keep_hours(state: State<'_, Clipboard>, hours: i64) -> Result<Vec<Item>, String> {
+    check_hours(hours)?;
+    let conn = state.db.lock().unwrap();
+    let before = keep_hours(&conn);
+    let tx = conn.unchecked_transaction().map_err(err)?;
+    store_keep_hours(&tx, hours).map_err(err)?;
+    let cutoff = now() - hours * 3600;
+    let removed = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT id, text, created_at, pinned FROM items
+                 WHERE pinned = 0 AND created_at < ?1 ORDER BY created_at, id",
+            )
+            .map_err(err)?;
+        let rows = stmt
+            .query_map(params![cutoff], |r| {
+                Ok(Item { id: r.get(0)?, text: r.get(1)?, created_at: r.get(2)?, pinned: r.get(3)? })
+            })
+            .map_err(err)?;
+        let removed = rows.collect::<Result<Vec<_>, _>>().map_err(err)?;
+        removed
+    };
+    tx.execute("DELETE FROM items WHERE pinned = 0 AND created_at < ?1", params![cutoff])
+        .map_err(err)?;
+    tx.commit().map_err(err)?;
+    crate::applog::info(&format!(
+        "clipboard: keep changed from {before} to {hours} hours, {} older item(s) removed",
+        removed.len()
+    ));
+    Ok(removed)
+}
+
+/// Undo for clipboard_set_keep_hours: puts the old keep time back first (so the minute cleanup
+/// cannot remove the items again), then the removed items with their own id, time and pin
+/// (a new id only if a newer copy has taken that id since).
+#[tauri::command]
+fn clipboard_undo_keep(state: State<'_, Clipboard>, hours: i64, items: Vec<Item>) -> Result<(), String> {
+    let result = undo_keep(&state, hours, &items);
+    match &result {
+        Ok(restored) => crate::applog::info(&format!(
+            "clipboard: keep undo: back to {hours} hours, {restored} of {} item(s) restored",
+            items.len()
+        )),
+        Err(e) => crate::applog::error(&format!("clipboard: keep undo failed: {e}")),
+    }
+    result.map(|_| ())
+}
+
+/// Returns how many items were put back.
+fn undo_keep(state: &Clipboard, hours: i64, items: &[Item]) -> Result<usize, String> {
+    check_hours(hours)?;
+    let conn = state.db.lock().unwrap();
+    let tx = conn.unchecked_transaction().map_err(err)?;
+    store_keep_hours(&tx, hours).map_err(err)?;
+    let mut restored = 0;
+    for item in items.iter().filter(|i| !i.text.trim().is_empty() && i.text.len() <= MAX_ITEM_BYTES) {
+        let same_id = tx
+            .execute(
+                "INSERT OR IGNORE INTO items (id, text, created_at, pinned) VALUES (?1, ?2, ?3, ?4)",
+                params![item.id, item.text, item.created_at, item.pinned],
+            )
+            .map_err(err)?;
+        if same_id == 0 {
+            tx.execute(
+                "INSERT INTO items (text, created_at, pinned) VALUES (?1, ?2, ?3)",
+                params![item.text, item.created_at, item.pinned],
+            )
+            .map_err(err)?;
+        }
+        restored += 1;
+    }
+    tx.commit().map_err(err)?;
+    Ok(restored)
 }
 
 /// This feature's commands. Name each one "clipboard_<name>" (for example "clipboard_list")
@@ -365,6 +439,7 @@ pub fn commands() -> impl Fn(Invoke) -> bool + Send + Sync + 'static {
         clipboard_delete,
         clipboard_clear_unpinned,
         clipboard_get_settings,
-        clipboard_set_keep_hours
+        clipboard_set_keep_hours,
+        clipboard_undo_keep
     ]
 }

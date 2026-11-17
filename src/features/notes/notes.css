@@ -4,7 +4,10 @@
   width: 30px; padding: 0; border-radius: var(--radius-sm); font-size: 18px; font-weight: 400; line-height: 1; flex: none;
 }
 .row.notes-row { display: flex; flex-direction: column; gap: 2px; }
+.notes-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .notes-title, .notes-preview { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.notes-title { flex: 1; min-width: 0; }
+.notes-date { flex: none; color: var(--muted); font-size: 11px; }
 .notes-title { font-weight: 500; color: var(--ink); }
 .notes-preview { color: var(--muted); }
 .notes-editor-view .toolbar { padding-bottom: 8px; }

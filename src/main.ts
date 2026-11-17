@@ -8,12 +8,15 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import * as clipboard from "./features/clipboard";
 import * as notes from "./features/notes";
 import * as screenshot from "./features/screenshot";
+import { mountPermission } from "./features/screenshot/permission";
+import { mountCaptureSettings } from "./features/screenshot/settings";
 
 // Each feature owns its folder and exports mount(el). A tab mounts its feature the first time it is shown.
 const features: Record<string, { mount(el: HTMLElement): void }> = { clipboard, screenshot, notes };
 const order = ["clipboard", "screenshot", "notes"];
 const mounted = new Set<string>();
 const TAB_KEY = "hl-desk.tab";
+const PIN_KEY = "hl-desk.pinned";
 const isMac = navigator.userAgent.includes("Mac");
 const mod = isMac ? "⌘" : "Ctrl+";
 
@@ -49,6 +52,24 @@ function hideWindow(): void {
   getCurrentWindow().hide().catch(() => {});
 }
 
+// ---- Pin: keep the popover open when it loses focus (lib.rs shell_set_pinned); Esc still hides it ----
+// Remembered in localStorage: a UI preference of this window only (settings.json is shared
+// with the capture-key settings).
+const pinBtn = document.getElementById("pin") as HTMLButtonElement;
+
+function setPinned(on: boolean): void {
+  pinBtn.setAttribute("aria-pressed", String(on));
+  document.body.dataset.pinned = String(on);
+  invoke("shell_set_pinned", { pinned: on }).catch(() => {});
+  try {
+    localStorage.setItem(PIN_KEY, String(on));
+  } catch {
+    // Storage unavailable: the pin is just not remembered.
+  }
+}
+
+pinBtn.addEventListener("click", () => setPinned(pinBtn.getAttribute("aria-pressed") !== "true"));
+
 // ---- Settings sheet ----
 const shortcuts: [string, string][] = [
   ["Open or close HL Desk", `${mod}${isMac ? "⇧" : "Shift+"}Space`],
@@ -60,6 +81,7 @@ const shortcuts: [string, string][] = [
   ["Move in a list, open", "↑ ↓, Enter"],
   ["Close", "Esc"],
 ];
+mountCaptureSettings(document.getElementById("settings-capture")!);
 document.getElementById("shortcuts")!.innerHTML = shortcuts
   .map(([what, keys]) => `<div><dt>${what}</dt><dd><kbd>${keys}</kbd></dd></div>`)
   .join("");
@@ -135,16 +157,12 @@ document.getElementById("welcome-list")!.innerHTML = welcomeItems
     <span class="welcome-keys">${keycaps(keys)}</span></li>`)
   .join("");
 
+// Screen Recording is a macOS permission: the same card as on the Screenshot tab, gone once allowed.
+const welcomePerm = mountPermission(document.getElementById("welcome-perm")!);
+
 function showWelcome(): void {
   welcome.hidden = false;
-  // Screen Recording is a macOS permission; the row goes once it is allowed.
-  const perm = document.getElementById("welcome-perm")!;
-  perm.hidden = !isMac;
-  if (isMac) {
-    invoke<boolean>("screenshot_permission")
-      .then((granted) => (perm.hidden = granted))
-      .catch(() => {});
-  }
+  if (isMac) welcomePerm.check();
   document.getElementById("welcome-try")!.focus();
 }
 
@@ -161,9 +179,6 @@ document.getElementById("welcome-try")!.addEventListener("click", () => {
   closeWelcome();
   show("screenshot");
   invoke("screenshot_capture").catch(() => {});
-});
-document.getElementById("welcome-perm-open")!.addEventListener("click", () => {
-  invoke("screenshot_open_permission_settings").catch(() => {});
 });
 document.getElementById("welcome-again")!.addEventListener("click", () => {
   invoke("settings_set_welcome_seen", { seen: false }).catch(() => {});
@@ -204,6 +219,14 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
+function localPinned(): boolean {
+  try {
+    return localStorage.getItem(PIN_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
 function localTab(): string | null {
   try {
     return localStorage.getItem(TAB_KEY);
@@ -212,6 +235,7 @@ function localTab(): string | null {
   }
 }
 show(localTab() ?? order[0]);
+setPinned(localPinned());
 void loadSettings().then((s) => {
   if (s && !s.welcomeSeen) showWelcome();
 });

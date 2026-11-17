@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HL Desk</title>
+  </head>
+  <body class="toast-page">
+    <p class="toast-notice" id="notice" hidden></p>
+    <div class="toast-shot" id="shot" hidden>
+      <button class="toast-thumb" id="thumb" type="button" title="Mark up in HL Desk" aria-label="Mark up in HL Desk">
+        <img id="thumb-img" alt="" draggable="false" />
+      </button>
+      <div class="toast-main">
+        <span class="toast-title">Screenshot taken</span>
+        <button class="btn-primary toast-markup" id="markup" type="button">Mark up in HL Desk</button>
+      </div>
+      <button class="icon-btn toast-close" id="close" type="button" aria-label="Close">
+        <svg width="12" height="12" viewBox="0 0 14 14" aria-hidden="true" fill="none" stroke="currentColor"
+          stroke-width="1.5" stroke-linecap="round"><path d="M3 3l8 8M11 3l-8 8" /></svg>
+      </button>
+    </div>
+    <script type="module" src="/src/toast/main.ts"></script>
+  </body>
+</html>

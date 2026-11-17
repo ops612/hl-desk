@@ -1,0 +1,10 @@
+/* Capture settings (top of the Settings sheet). .setting, .sheet-section, .select, .switch, .btn
+   and .hint come from src/styles.css. */
+.cap-note {
+  display: flex; align-items: flex-start; gap: 8px; margin: 8px 0 4px; padding: 8px 10px;
+  border-radius: var(--radius-sm); background: var(--bg);
+}
+.cap-note.warn { box-shadow: inset 3px 0 0 var(--indigo); }
+.cap-note .hint { flex: 1; margin: 0; line-height: 1.45; }
+.cap-note .btn { flex: none; height: 26px; padding: 0 10px; border-radius: var(--radius-sm); font-size: 11px; }
+.cap-markup-hint { margin: 4px 0 0; line-height: 1.45; }

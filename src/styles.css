@@ -36,6 +36,10 @@ body.popover { border: 1px solid var(--border); }
   padding: 8px 8px 4px var(--inset); cursor: default; user-select: none; -webkit-user-select: none;
 }
 .wordmark { font-size: 11px; font-weight: 500; letter-spacing: 2px; }
+.header-actions { display: flex; gap: 2px; }
+/* Pin: pressed = the popover stays open and on top (lib.rs shell_set_pinned). */
+.pin-btn[aria-pressed="true"] { background: var(--indigo-tint); color: var(--indigo); }
+.pin-btn[aria-pressed="true"] path { fill: currentColor; }
 
 /* Segmented control: Clipboard, Screenshot, Notes. */
 .segmented {
@@ -115,6 +119,13 @@ textarea.field { height: auto; padding: 8px 10px; resize: none; }
   margin-left: auto; padding: 0; border: 0; background: none; color: #fff; font-weight: 500;
   text-decoration: underline; cursor: pointer;
 }
+/* Short notice in the same dark style, floating above the footer ("Copied. Click your app, then Ctrl+V", when pinned). */
+.toast {
+  position: absolute; left: var(--inset); right: var(--inset); bottom: 52px; z-index: 5;
+  padding: 8px 12px; border-radius: var(--radius); background: var(--ink); color: #fff;
+  font-size: 12px; text-align: center; box-shadow: 0 4px 12px rgb(11 18 32 / 20%);
+}
+.toast kbd { font-weight: 500; }
 /* One key of a shortcut, e.g. <kbd class="keycap">Ctrl</kbd><kbd class="keycap">C</kbd>. */
 .keycap {
   display: inline-block; min-width: 20px; padding: 1px 5px; border: 1px solid var(--border);
@@ -179,13 +190,9 @@ label.setting { cursor: pointer; }
   border-radius: var(--radius-sm); background: var(--indigo-tint); color: var(--indigo);
 }
 .welcome-text { flex: 1; min-width: 0; font-size: 12px; }
-.welcome-text strong, .welcome-perm strong { display: block; font-weight: 500; }
-.welcome-text .hint, .welcome-perm .hint { margin: 1px 0 0; }
+.welcome-text strong { display: block; font-weight: 500; }
+.welcome-text .hint { margin: 1px 0 0; }
 .welcome-keys { flex: none; white-space: nowrap; }
-.welcome-perm {
-  display: flex; align-items: center; gap: 10px; margin-top: 10px; padding: 10px 12px;
-  border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); font-size: 12px;
-}
-.welcome-perm > div { flex: 1; min-width: 0; }
-.welcome-perm .btn { flex: none; height: 26px; padding: 0 10px; border-radius: var(--radius-sm); font-size: 11px; }
+/* The Screen Recording card (src/features/screenshot/permission.css draws it). */
+.welcome-perm { margin-top: 10px; }
 .welcome-actions { display: flex; gap: 6px; }

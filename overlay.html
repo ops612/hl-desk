@@ -6,10 +6,16 @@
     <title>Capture area</title>
   </head>
   <body>
-    <img id="shot" alt="" draggable="false" />
+    <canvas id="shot"></canvas>
     <div id="dim"></div>
-    <div id="sel" hidden><span id="size"></span></div>
-    <p id="hint">Drag over the area to capture · Esc or right-click to cancel</p>
+    <div id="sel" hidden></div>
+    <div id="hline" hidden></div>
+    <div id="vline" hidden></div>
+    <div id="loupe" hidden>
+      <canvas id="loupe-canvas" width="126" height="126"></canvas>
+      <span id="loupe-text"></span>
+    </div>
+    <p id="hint">Drag to capture<span class="dot">·</span>Esc to cancel</p>
     <script type="module" src="/src/overlay/main.ts"></script>
   </body>
 </html>
