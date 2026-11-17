@@ -51,6 +51,9 @@ function hideWindow(): void {
 const shortcuts: [string, string][] = [
   ["Open or close HL Desk", `${mod}${isMac ? "⇧" : "Shift+"}Space`],
   ["Clipboard, Screenshot, Notes", `${mod}1, ${mod}2, ${mod}3`],
+  ["Capture an area", `${mod}${isMac ? "⇧" : "Shift+"}2`],
+  ["Editor: number, pen, crop, undo", `N, P, C, ${mod}Z`],
+  ["Pin a clipboard item", `${mod}P`],
   ["New note", `${mod}N`],
   ["Move in a list, open", "↑ ↓, Enter"],
   ["Close", "Esc"],
