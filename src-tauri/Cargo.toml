@@ -1,6 +1,6 @@
 [package]
 name = "hl-desk"
-version = "0.1.0"
+version = "0.1.1"
 description = "HL Desk: clipboard history, screenshots and notes in the menu bar"
 edition = "2021"
 publish = false
