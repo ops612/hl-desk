@@ -10,6 +10,7 @@ import * as notes from "./features/notes";
 import * as screenshot from "./features/screenshot";
 import { mountPermission } from "./features/screenshot/permission";
 import { mountCaptureSettings } from "./features/screenshot/settings";
+import { startUpdater } from "./updater";
 
 // Each feature owns its folder and exports mount(el). A tab mounts its feature the first time it is shown.
 const features: Record<string, { mount(el: HTMLElement): void }> = { clipboard, screenshot, notes };
@@ -239,6 +240,8 @@ setPinned(localPinned());
 void loadSettings().then((s) => {
   if (s && !s.welcomeSeen) showWelcome();
 });
+// Update check 10 s after start and every 6 hours (src/updater.ts).
+startUpdater();
 
 // A failed capture shows this window (Rust) with the error on the Screenshot tab; so does a
 // capture stopped for the macOS Screen Recording permission (the tab shows the permission card).

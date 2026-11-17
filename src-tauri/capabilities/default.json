@@ -8,6 +8,10 @@
     "core:window:allow-hide",
     "core:window:allow-start-dragging",
     "core:app:allow-exit",
-    "drag:default"
+    "drag:default",
+    "updater:allow-check",
+    "updater:allow-download",
+    "updater:allow-install",
+    "process:allow-restart"
   ]
 }
