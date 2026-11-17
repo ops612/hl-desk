@@ -1,6 +1,7 @@
 // Screenshot editor window (editor.html?id=<capture id>), opened by src-tauri/src/screenshot.rs.
 // The edits are a list of operations drawn over the original image, so undo is "drop the last one".
 import { invoke } from "@tauri-apps/api/core";
+import { pngUrl } from "../png-url";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
 import "./editor.css";
@@ -40,6 +41,7 @@ const markerRadius = 12 * unit;
 
 document.getElementById("keys")!.textContent =
   `N number · P pen · C crop · ${isMac ? "⌘Z" : "Ctrl+Z"} undo · Esc close`;
+undoBtn.title = `Undo (${isMac ? "⌘Z" : "Ctrl+Z"})`;
 
 // ---------- state from the operation list ----------
 
@@ -300,8 +302,18 @@ function flash(text: string): void {
   flashTimer = window.setTimeout(() => (statusEl.textContent = ""), 2500);
 }
 
+/** Writes a failure to the app log (hl-desk.log); the window has no console in a release build. */
+function logError(step: string, e: unknown): void {
+  void invoke("app_log", { level: "error", message: `editor ${id}: ${step}: ${String(e)}` }).catch(
+    () => {},
+  );
+}
+
 function run(action: () => Promise<void>): void {
-  action().catch((e) => flash(String(e)));
+  action().catch((e) => {
+    logError("action", e);
+    flash(String(e));
+  });
 }
 
 // "Drag me": saves the edits to the file, then starts a native file drag of it.
@@ -362,7 +374,7 @@ window.addEventListener("resize", fit);
 // The red close button saves too, so markup is never lost. Tauri waits for this handler,
 // then closes the window (needs core:window:allow-destroy in capabilities/editor.json).
 void getCurrentWindow().onCloseRequested(async () => {
-  await save().catch(() => {});
+  await save().catch((e) => logError("save on close", e));
 });
 
 // ---------- start ----------
@@ -370,8 +382,8 @@ void getCurrentWindow().onCloseRequested(async () => {
 async function load(): Promise<void> {
   const shot = await invoke<{ path: string }>("screenshot_get", { id });
   path = shot.path;
-  const bytes = await invoke<ArrayBuffer>("screenshot_read", { id });
-  image.src = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
+  const bytes = await invoke<unknown>("screenshot_read", { id });
+  image.src = pngUrl(bytes);
   await image.decode();
   setColor(color);
   setTool("number");
@@ -379,4 +391,7 @@ async function load(): Promise<void> {
   dragThumb.src = thumbnail();
 }
 
-load().catch((e) => flash(String(e)));
+load().catch((e) => {
+  logError("load", e);
+  flash(String(e));
+});

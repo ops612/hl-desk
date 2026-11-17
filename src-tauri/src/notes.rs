@@ -57,7 +57,7 @@ fn open_store(app: &AppHandle) -> Result<Connection, Box<dyn Error>> {
 pub fn init(app: &AppHandle) {
     let conn = open_store(app).map_err(|e| format!("Could not open notes.db: {e}"));
     if let Err(e) = &conn {
-        eprintln!("{e}");
+        crate::applog::error(&format!("notes: {e}"));
     }
     app.manage(Store(Mutex::new(conn)));
 }

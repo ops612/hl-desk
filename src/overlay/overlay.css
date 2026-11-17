@@ -1,0 +1,29 @@
+/* Area-capture overlay (Windows): the frozen screen, a dim layer and the dragged rectangle. */
+:root {
+  --ink: #0b1220;
+  --indigo: #2f4cc8;
+  --dim: rgba(11, 18, 32, 0.35);
+  font: 500 12px/1.4 "IBM Plex Sans", -apple-system, "Segoe UI", sans-serif;
+}
+html, body {
+  margin: 0; height: 100%; overflow: hidden;
+  background: var(--ink); cursor: crosshair;
+  user-select: none; -webkit-user-select: none;
+}
+#shot { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+#dim { position: fixed; inset: 0; background: var(--dim); }
+#sel {
+  position: fixed; outline: 1px solid #fff;
+  box-shadow: 0 0 0 1px var(--indigo), 0 0 0 100vmax var(--dim);
+}
+#size {
+  position: absolute; left: 0; bottom: 100%; margin-bottom: 6px;
+  padding: 2px 6px; border-radius: 8px; background: var(--ink); color: #fff; white-space: nowrap;
+}
+#sel.near-top #size { bottom: auto; top: 0; margin: 6px; }
+#hint {
+  position: fixed; top: 24px; left: 50%; transform: translateX(-50%); margin: 0;
+  padding: 6px 12px; border-radius: 10px; background: var(--ink); color: #fff;
+  pointer-events: none;
+}
+[hidden] { display: none !important; }

@@ -1,6 +1,7 @@
 // Screenshot feature. Called once, the first time the Screenshot tab is shown.
 // Rust side: src-tauri/src/screenshot.rs. Editor window: editor.html + src/editor/.
 import { invoke } from "@tauri-apps/api/core";
+import { pngUrl } from "../../png-url";
 import { listen } from "@tauri-apps/api/event";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
 import "./screenshot.css";
@@ -10,6 +11,10 @@ type Shot = { id: number; path: string; createdAt: number; updatedAt: number };
 const KEEP_MS = 24 * 60 * 60 * 1000;
 const isMac = navigator.userAgent.includes("Mac");
 const shortcut = isMac ? "⌘⇧2" : "Ctrl+Shift+2";
+// The Screen Recording permission exists only on macOS.
+const macHint = isMac
+  ? "<br /><br />First time on a Mac: if the capture shows only your wallpaper, turn on HL Desk in System Settings → Privacy &amp; Security → Screen Recording, then quit and reopen HL Desk."
+  : "";
 
 // Thumbnail object URLs, keyed by "id:updatedAt" so an edited capture reloads.
 const urls = new Map<string, string>();
@@ -39,6 +44,14 @@ export function mount(el: HTMLElement): void {
     invoke("screenshot_capture").catch(showError);
   });
 
+  // A failed capture (Rust shows this window and sends the message). One sent before this tab
+  // was first opened is picked up with screenshot_last_error.
+  const showFailure = (message: string) => showError(`Capture failed. ${message}`);
+  void listen<string>("screenshot-error", (e) => showFailure(e.payload));
+  invoke<string | null>("screenshot_last_error")
+    .then((message) => message && showFailure(message))
+    .catch(() => {});
+
   const refresh = () => render(grid).catch(showError);
   void listen("screenshot-changed", refresh);
   setInterval(refresh, 60_000); // keeps "time left" current
@@ -48,7 +61,7 @@ export function mount(el: HTMLElement): void {
 async function render(grid: HTMLElement): Promise<void> {
   const shots = await invoke<Shot[]>("screenshot_list");
   if (shots.length === 0) {
-    grid.innerHTML = `<p class="shot-empty">No screenshots yet.<br />Press <kbd>${shortcut}</kbd> or Capture area, then drag over what you want.<br /><br />First time on a Mac: if the capture shows only your wallpaper, turn on HL Desk in System Settings → Privacy &amp; Security → Screen Recording, then quit and reopen HL Desk.</p>`;
+    grid.innerHTML = `<p class="shot-empty">No screenshots yet.<br />Press <kbd>${shortcut}</kbd> or Capture area, then drag over what you want.${macHint}</p>`;
   } else {
     const cards = await Promise.all(shots.map(card));
     grid.replaceChildren(...cards);
@@ -68,8 +81,8 @@ const key = (s: Shot) => `${s.id}:${s.updatedAt}`;
 async function thumbUrl(shot: Shot): Promise<string> {
   let url = urls.get(key(shot));
   if (!url) {
-    const bytes = await invoke<ArrayBuffer>("screenshot_read", { id: shot.id });
-    url = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
+    const bytes = await invoke<unknown>("screenshot_read", { id: shot.id });
+    url = pngUrl(bytes);
     urls.set(key(shot), url);
   }
   return url;

@@ -54,7 +54,7 @@ fn hash(text: &str) -> u64 {
 
 fn open_db(app: &AppHandle) -> Connection {
     let conn = crate::db::open(app, "clipboard.db").unwrap_or_else(|e| {
-        eprintln!("clipboard: cannot open clipboard.db ({e}); history is kept in memory only");
+        crate::applog::error(&format!("clipboard: cannot open clipboard.db ({e}); history is kept in memory only"));
         Connection::open_in_memory().expect("in-memory SQLite")
     });
     let setup = conn.execute_batch(
@@ -71,7 +71,7 @@ fn open_db(app: &AppHandle) -> Connection {
          );",
     );
     if let Err(e) = setup {
-        eprintln!("clipboard: cannot create tables: {e}");
+        crate::applog::error(&format!("clipboard: cannot create tables: {e}"));
     }
     conn
 }
@@ -191,9 +191,69 @@ fn watch(app: AppHandle) {
         let Ok(text) = app.clipboard().read_text() else { continue };
         let h = hash(&text);
         if last_hash != Some(h) {
+            #[cfg(windows)]
+            match is_private_copy() {
+                None => continue, // clipboard busy: look again on the next tick
+                Some(true) => {
+                    last_hash = Some(h);
+                    continue;
+                }
+                Some(false) => {}
+            }
             last_hash = Some(h);
             on_copy(&app, &text);
         }
+    }
+}
+
+/// Windows: true when the copy is marked private, the way password managers and Windows itself
+/// do it: an "ExcludeClipboardContentFromMonitorProcessing" or "Clipboard Viewer Ignore" format,
+/// or "CanIncludeInClipboardHistory" set to 0. None when the clipboard could not be opened.
+#[cfg(windows)]
+fn is_private_copy() -> Option<bool> {
+    use windows_sys::Win32::System::DataExchange::{
+        CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
+        RegisterClipboardFormatW,
+    };
+    use windows_sys::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
+
+    fn format(name: &str) -> u32 {
+        let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+        // SAFETY: `wide` is a NUL-terminated UTF-16 string that outlives the call.
+        unsafe { RegisterClipboardFormatW(wide.as_ptr()) }
+    }
+    // SAFETY: IsClipboardFormatAvailable only reads the clipboard's format list.
+    let present = |f: u32| f != 0 && unsafe { IsClipboardFormatAvailable(f) } != 0;
+
+    if present(format("ExcludeClipboardContentFromMonitorProcessing"))
+        || present(format("Clipboard Viewer Ignore"))
+    {
+        return Some(true);
+    }
+    let history = format("CanIncludeInClipboardHistory");
+    if !present(history) {
+        return Some(false);
+    }
+    // The value is a DWORD; 0 means "keep out of clipboard history".
+    // SAFETY: the clipboard is opened (no owner window) and closed again on every path; the
+    // handle from GetClipboardData is only read while locked and while the clipboard is open.
+    unsafe {
+        if OpenClipboard(0 as _) == 0 {
+            return None;
+        }
+        let mut private = false;
+        let data = GetClipboardData(history);
+        if data as usize != 0 {
+            let value = GlobalLock(data as _) as *const u32;
+            if !value.is_null() {
+                if GlobalSize(data as _) >= 4 {
+                    private = value.read_unaligned() == 0;
+                }
+                GlobalUnlock(data as _);
+            }
+        }
+        CloseClipboard();
+        Some(private)
     }
 }
 

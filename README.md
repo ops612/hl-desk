@@ -27,7 +27,7 @@ Running the whole app (`npm run tauri dev`) needs Rust and, on Windows, the MSVC
   both, checks them with `spctl` and uploads the `.dmg` as the artifact `HL-Desk-macos-universal`.
   If a signing secret is missing the job fails and names it; it never ships an unsigned build.
   It also uploads the resolved `Cargo.lock`.
-- **Windows** (only when started by hand, "Run workflow"): builds an unsigned NSIS installer,
+- **Windows** (every push to `main`, and by hand): builds an unsigned NSIS installer,
   artifact `HL-Desk-windows`. Windows asks "More info, Run anyway" once.
 
 Repository secrets used by the macOS job (names only):
@@ -82,5 +82,18 @@ Shared files (change only in a separate, reviewed PR): `src/main.ts` (tabs), `sr
   in the app data folder.
 - **Already installed:** global-shortcut, clipboard-manager, fs (scoped to app data, temp, Pictures,
   Desktop), drag (`tauri-plugin-drag` by CrabNebula, drags files out of the window), `xcap` for screen
-  capture, and on macOS `objc2-app-kit` for `NSPasteboard` (change count, concealed copies).
+  capture, on macOS `objc2-app-kit` for `NSPasteboard` (change count, concealed copies), and on
+  Windows `windows-sys` for the clipboard formats that mark a copy private.
+- **Windows area capture:** `screenshot.rs` freezes every monitor with xcap and opens one overlay
+  window per monitor (`overlay.html`, `src/overlay/`, capability `overlay.json`); the user drags a
+  rectangle there (Esc or right-click cancels). macOS uses `screencapture -i` instead.
 - **macOS:** `src-tauri/Info.plist` sets `LSUIElement` (no Dock icon) and the Screen Recording prompt text.
+- **Log:** `src-tauri/src/applog.rs` writes `<app data>/hl-desk.log` (UTC time, level, message; cut
+  to the last ~500 KB past 1 MB; on Windows `%APPDATA%\com.hobbyland.hldesk\hl-desk.log`). Use
+  `applog::info/warn/error` in Rust, never `eprintln!` (a release build has no console); pages call
+  `invoke("app_log", { level, message })`. Every capture step is logged, and a failed capture
+  shows the main window with the error on the Screenshot tab.
+- **One instance:** `tauri-plugin-single-instance`. A second launch shows the running window;
+  `hl-desk.exe --capture` (first or second launch) starts an area capture, for testing from a script.
+- **Popover:** the main window hides when it loses focus. On Windows it has no maximize or minimize
+  button and a fixed size.
