@@ -73,8 +73,9 @@ function signature(file, pub, version) {
   if (!verify(null, Buffer.concat([s.rest, Buffer.from(trusted, "utf8")]), pub.key, global)) {
     fail(`${sigFile}: trusted comment signature is invalid`);
   }
-  // The signed file name may carry the version (Windows: "HL Desk_0.1.4_x64-setup.exe").
-  const signedVersion = /_(\d+\.\d+\.\d+)_/.exec(trusted)?.[1];
+  // The trusted comment carries "version:0.1.4" (current Tauri), and the Windows file name
+  // carries it too ("HL Desk_0.1.4_x64-setup.exe").
+  const signedVersion = /\bversion:(\S+)/.exec(trusted)?.[1] ?? /_(\d+\.\d+\.\d+)_/.exec(trusted)?.[1];
   if (signedVersion && signedVersion !== version) fail(`${sigFile}: built as ${signedVersion}, not ${version}`);
   return sig;
 }
