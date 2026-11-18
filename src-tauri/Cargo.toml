@@ -57,8 +57,9 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["std", 
 # Threading: the clipboard owner's process name (device screenshot only from the snipping tool).
 # LibraryLoader: the translate clipboard listener's message-only window (translate.rs).
 # Storage_FileSystem: GetDriveTypeW, so copied files on a mapped network drive are not looked up.
+# SystemInformation: GetLogicalProcessorInformation, the physical core count for whisper (voice.rs).
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_DataExchange", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_DataExchange", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_Storage_FileSystem", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 # Text recognition (ocr.rs): Windows.Media.Ocr (same windows version as already in Cargo.lock).
 windows = { version = "0.62", features = ["Foundation", "Foundation_Collections", "Globalization", "Graphics_Imaging", "Media_Ocr", "Storage_Streams", "System_UserProfile"] }
 windows-future = "0.3"

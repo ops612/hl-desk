@@ -507,10 +507,12 @@ mod imp {
         let ctx = super::load(model)?;
         let load_ms = t.elapsed().as_millis();
         let t = Instant::now();
-        let (text, _) = super::transcribe_with(&ctx, &pcm, Some("en"))?;
+        let out = super::transcribe_with(&ctx, &pcm, Some("en"), super::thread_count())?;
         let transcribe_ms = t.elapsed().as_millis();
+        let text = out.text;
         applog::info(&format!(
-            "voice: model load {load_ms} ms, transcribe {transcribe_ms} ms, {} characters out (recording {recording_ms} ms)",
+            "voice: model load {load_ms} ms, transcribe {transcribe_ms} ms ({}), {} characters out (recording {recording_ms} ms)",
+            out.timings,
             text.chars().count()
         ));
         if text.is_empty() {
@@ -520,7 +522,8 @@ mod imp {
     }
 
     /// Mono samples at `rate` to 16 kHz: each output sample is the mean of the input samples
-    /// around it (a box filter, enough against aliasing for speech).
+    /// around it (a box filter as the low-pass). From 48 kHz that is exactly 3 samples per
+    /// output sample (tested), which is enough against aliasing for speech.
     pub fn to_16k(input: &[f32], rate: u32) -> Vec<f32> {
         if rate == 16_000 || input.is_empty() {
             return input.to_vec();
@@ -560,28 +563,171 @@ fn is_noise(segment: &str) -> bool {
     s.is_empty() || (s.starts_with('[') && s.ends_with(']')) || (s.starts_with('(') && s.ends_with(')'))
 }
 
-/// Transcribes 16 kHz mono f32 samples with a loaded model. `language` is a whisper code
-/// ("en"); None detects it. Returns the text and the language used.
+/// whisper threads: the physical cores, at most 4. More (hyper-threads, or every logical core)
+/// made whisper.cpp's spinning worker threads wait on each other: 117 s for a 9.5 s clip on a
+/// 4-core / 8-thread i7-3630QM. Without a physical count: half the logical cores.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn threads_for(physical: Option<usize>, logical: usize) -> usize {
+    physical.unwrap_or(logical / 2).clamp(1, 4).min(logical.max(1))
+}
+
+/// The number of physical processor cores (Windows), or None.
+#[cfg(windows)]
+fn physical_cores() -> Option<usize> {
+    use windows_sys::Win32::System::SystemInformation::{
+        GetLogicalProcessorInformation, RelationProcessorCore, SYSTEM_LOGICAL_PROCESSOR_INFORMATION,
+    };
+    let size = std::mem::size_of::<SYSTEM_LOGICAL_PROCESSOR_INFORMATION>();
+    let mut len: u32 = 0;
+    // SAFETY: a null buffer asks for the needed length in bytes.
+    unsafe { GetLogicalProcessorInformation(std::ptr::null_mut(), &mut len) };
+    if len == 0 {
+        return None;
+    }
+    let mut buf: Vec<SYSTEM_LOGICAL_PROCESSOR_INFORMATION> = Vec::with_capacity(len as usize / size + 1);
+    // SAFETY: buf has room for `len` bytes; the call writes at most that many and sets len.
+    let ok = unsafe { GetLogicalProcessorInformation(buf.as_mut_ptr(), &mut len) };
+    if ok == 0 {
+        return None;
+    }
+    // SAFETY: the call filled len / size entries.
+    unsafe { buf.set_len((len as usize / size).min(buf.capacity())) };
+    let cores = buf.iter().filter(|i| i.Relationship == RelationProcessorCore).count();
+    (cores > 0).then_some(cores)
+}
+
+/// whisper threads for this PC (see threads_for).
+#[cfg(windows)]
+pub fn thread_count() -> usize {
+    let logical = std::thread::available_parallelism().map_or(4, |n| n.get());
+    threads_for(physical_cores(), logical)
+}
+
+/// The encoder context for a clip of `n_samples` at 16 kHz: whisper's encoder always covers
+/// 30 s (1500 frames, 50 per second) unless told less, so a short clip is encoded at its own
+/// length plus a margin (at least 256 frames, about 5 s). Clips over 30 s: the full 1500.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn audio_ctx_for(n_samples: usize) -> i32 {
+    const FULL: usize = 1500;
+    let ms = n_samples * 1000 / 16_000;
+    if ms >= 30_000 {
+        return FULL as i32;
+    }
+    let frames = (ms * FULL).div_ceil(30_000) + 64;
+    frames.clamp(256, FULL) as i32
+}
+
+/// Where the time went in one transcription (for the log line).
+#[cfg(windows)]
+pub struct Timings {
+    pub threads: usize,
+    pub audio_ctx: i32,
+    /// Audio to mel spectrogram, until the encoder starts.
+    pub mel_ms: u128,
+    /// Encoder, until the first token's logits (includes the first decoder pass).
+    pub encode_ms: u128,
+    /// The rest of the decoding.
+    pub decode_ms: u128,
+    /// Decoder steps (tokens tried; more than the text's tokens means retries).
+    pub steps: u32,
+}
+
+#[cfg(windows)]
+impl std::fmt::Display for Timings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "threads {}, audio_ctx {}, mel {} ms, encode {} ms, decode {} ms, {} decoder steps",
+            self.threads, self.audio_ctx, self.mel_ms, self.encode_ms, self.decode_ms, self.steps
+        )
+    }
+}
+
+#[cfg(windows)]
+pub struct Transcript {
+    pub text: String,
+    pub timings: Timings,
+}
+
+/// Filled by whisper.cpp's callbacks during one `full` run (same thread).
+#[cfg(windows)]
+struct Probe {
+    encoder_begin: Option<std::time::Instant>,
+    first_logits: Option<std::time::Instant>,
+    steps: u32,
+}
+
+#[cfg(windows)]
+unsafe extern "C" fn on_encoder_begin(
+    _ctx: *mut whisper_rs::whisper_rs_sys::whisper_context,
+    _state: *mut whisper_rs::whisper_rs_sys::whisper_state,
+    user_data: *mut std::ffi::c_void,
+) -> bool {
+    // SAFETY: user_data is the &mut Probe set in transcribe_with, alive for the whole run.
+    let probe = unsafe { &mut *(user_data as *mut Probe) };
+    probe.encoder_begin.get_or_insert_with(std::time::Instant::now);
+    true
+}
+
+#[cfg(windows)]
+unsafe extern "C" fn on_logits(
+    _ctx: *mut whisper_rs::whisper_rs_sys::whisper_context,
+    _state: *mut whisper_rs::whisper_rs_sys::whisper_state,
+    _tokens: *const whisper_rs::whisper_rs_sys::whisper_token_data,
+    _n_tokens: std::os::raw::c_int,
+    _logits: *mut f32,
+    user_data: *mut std::ffi::c_void,
+) {
+    // SAFETY: as in on_encoder_begin.
+    let probe = unsafe { &mut *(user_data as *mut Probe) };
+    probe.first_logits.get_or_insert_with(std::time::Instant::now);
+    probe.steps += 1;
+}
+
+/// Transcribes 16 kHz mono f32 samples with a loaded model on `threads` threads, set up for
+/// short dictation: greedy, no temperature retries, no context from earlier text, one segment
+/// and an encoder sized to the clip when it is under 30 s, no timestamps. `language` is a
+/// whisper code ("en"); None detects it.
 #[cfg(windows)]
 pub fn transcribe_with(
     ctx: &WhisperContext,
     pcm_16k_mono_f32: &[f32],
     language: Option<&str>,
-) -> Result<(String, String), String> {
+    threads: usize,
+) -> Result<Transcript, String> {
     let mut state = ctx
         .create_state()
         .map_err(|e| format!("could not start the voice model: {e}"))?;
+    let audio_ctx = audio_ctx_for(pcm_16k_mono_f32.len());
+    let short = audio_ctx < 1500;
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
     params.set_language(Some(language.unwrap_or("auto")));
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(8);
-    params.set_n_threads(threads as _);
+    params.set_n_threads(threads.max(1) as _);
+    params.set_temperature(0.0);
+    params.set_temperature_inc(0.0);
+    params.set_no_context(true);
+    params.set_single_segment(short);
+    params.set_audio_ctx(if short { audio_ctx } else { 0 });
+    params.set_suppress_blank(true);
+    params.set_no_timestamps(true);
     params.set_print_special(false);
     params.set_print_progress(false);
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
+    let mut probe = Probe { encoder_begin: None, first_logits: None, steps: 0 };
+    let probe_ptr = &mut probe as *mut Probe as *mut std::ffi::c_void;
+    // SAFETY: the callbacks only touch `probe`, which outlives the synchronous `full` call below.
+    unsafe {
+        params.set_start_encoder_callback(Some(on_encoder_begin));
+        params.set_start_encoder_callback_user_data(probe_ptr);
+        params.set_filter_logits_callback(Some(on_logits));
+        params.set_filter_logits_callback_user_data(probe_ptr);
+    }
+    let start = std::time::Instant::now();
     state
         .full(params, pcm_16k_mono_f32)
         .map_err(|e| format!("voice to text failed: {e}"))?;
+    let end = std::time::Instant::now();
     let mut text = String::new();
     for segment in state.as_iter() {
         let part = segment
@@ -591,16 +737,46 @@ pub fn transcribe_with(
             text.push_str(&part);
         }
     }
-    let lang = whisper_rs::get_lang_str(state.full_lang_id_from_state())
-        .unwrap_or("?")
-        .to_string();
-    Ok((text.trim().to_string(), lang))
+    let ms = |a: std::time::Instant, b: std::time::Instant| b.saturating_duration_since(a).as_millis();
+    let enc = probe.encoder_begin.unwrap_or(start);
+    let first = probe.first_logits.unwrap_or(end);
+    Ok(Transcript {
+        text: text.trim().to_string(),
+        timings: Timings {
+            threads,
+            audio_ctx: if short { audio_ctx } else { 1500 },
+            mel_ms: ms(start, enc),
+            encode_ms: ms(enc, first),
+            decode_ms: ms(first, end),
+            steps: probe.steps,
+        },
+    })
 }
 
-/// The recording slot's races (pure; runs on every platform).
+/// The recording slot's races and the whisper settings (pure; run on every platform).
 #[cfg(test)]
 mod slot_tests {
-    use super::Slot;
+    use super::{audio_ctx_for, threads_for, Slot};
+
+    #[test]
+    fn threads_are_physical_cores_up_to_4() {
+        assert_eq!(threads_for(Some(4), 8), 4, "i7-3630QM: 4 cores, 8 threads");
+        assert_eq!(threads_for(Some(8), 16), 4);
+        assert_eq!(threads_for(Some(2), 4), 2);
+        assert_eq!(threads_for(None, 8), 4);
+        assert_eq!(threads_for(None, 4), 2);
+        assert_eq!(threads_for(None, 1), 1);
+        assert_eq!(threads_for(Some(0), 2), 1);
+    }
+
+    #[test]
+    fn encoder_is_sized_to_the_clip() {
+        assert_eq!(audio_ctx_for(16_000), 256, "1 s: the minimum");
+        assert_eq!(audio_ctx_for(160_000), 564, "10 s: 500 frames + 64");
+        assert_eq!(audio_ctx_for(16_000 * 29), 1500, "29 s: capped");
+        assert_eq!(audio_ctx_for(16_000 * 30), 1500);
+        assert_eq!(audio_ctx_for(16_000 * 120), 1500);
+    }
 
     #[test]
     fn one_start_at_a_time() {
@@ -673,6 +849,20 @@ mod tests {
         assert_eq!(flat.len(), 16_000);
         assert!(flat.iter().all(|s| (s - 0.5).abs() < 1e-6));
         assert_eq!(imp::to_16k(&[0.1, 0.2], 16_000), vec![0.1, 0.2]);
+        // 48 kHz: each output is the mean of exactly 3 input samples, in order.
+        let ramp: Vec<f32> = (0..30).map(|i| i as f32).collect();
+        let out = imp::to_16k(&ramp, 48_000);
+        assert_eq!(out.len(), 10);
+        for (i, s) in out.iter().enumerate() {
+            assert!((s - (3 * i + 1) as f32).abs() < 1e-5, "sample {i}: {s}");
+        }
+    }
+
+    #[test]
+    fn physical_core_count_is_sane() {
+        let threads = thread_count();
+        eprintln!("voice: whisper threads on this runner = {threads}");
+        assert!((1..=4).contains(&threads));
     }
 
     #[test]
@@ -735,14 +925,27 @@ mod tests {
         let ctx = load(&model).expect("load model");
         eprintln!("voice: {} loaded in {} ms", imp::MODEL.name, t.elapsed().as_millis());
         let pcm = read_wav(&fixture);
-        let audio_ms = pcm.len() as u128 * 1000 / 16_000;
-        let t = Instant::now();
-        let (text, _) = transcribe_with(&ctx, &pcm, Some("en")).expect("transcribe");
-        eprintln!(
-            "voice: RESULT model={} audio_ms={audio_ms} ms={} text={text:?}",
-            imp::MODEL.name,
-            t.elapsed().as_millis()
-        );
-        assert!(text.to_lowercase().contains("supplier"), "unexpected text: {text}");
+        // A ~10 s clip too: the sentence three times with half a second of silence between.
+        let mut long = Vec::new();
+        for _ in 0..3 {
+            long.extend_from_slice(&pcm);
+            long.extend(std::iter::repeat(0.0).take(8_000));
+        }
+        // This PC's thread count, then 2 threads to stand in for a slow PC.
+        for (clip, samples) in [("3.6 s", &pcm), ("10 s", &long)] {
+            for threads in [thread_count(), 2] {
+                let audio_ms = samples.len() as u128 * 1000 / 16_000;
+                let t = Instant::now();
+                let out = transcribe_with(&ctx, samples, Some("en"), threads).expect("transcribe");
+                eprintln!(
+                    "voice: RESULT model={} clip={clip} audio_ms={audio_ms} ms={} ({}) text={:?}",
+                    imp::MODEL.name,
+                    t.elapsed().as_millis(),
+                    out.timings,
+                    out.text
+                );
+                assert!(out.text.to_lowercase().contains("supplier"), "unexpected text: {}", out.text);
+            }
+        }
     }
 }
