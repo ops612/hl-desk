@@ -424,7 +424,7 @@ export function mount(el: HTMLElement): void {
 
   search.addEventListener("input", () => {
     selected = 0;
-    fadeNext = true;
+    // No fade while typing a search: it would restart on every key (filters still fade).
     void refresh();
   });
 

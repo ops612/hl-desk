@@ -528,6 +528,10 @@ export function mount(el: HTMLElement): void {
         viz = "micOff";
         text = NO_SOUND;
         tip = NO_SOUND_TIP;
+      } else if (state === "stale") {
+        // No level events for a while: never claim "Listening" without proof.
+        viz = "bars";
+        text = "Microphone…";
       } else {
         viz = "bars";
         text = `Listening · ${clock(now - meter.since)}`;
