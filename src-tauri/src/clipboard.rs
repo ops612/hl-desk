@@ -4,7 +4,8 @@
 //! copy in clipboard.db, as one of three kinds:
 //! - "text": the text itself (up to 100 KB).
 //! - "image": a PNG of the image plus a 256 px thumbnail in `<app data>/clipboard-images/`
-//!   (`<id>.png`, `<id>-thumb.png`); images over 25 MB as PNG are skipped.
+//!   (`<stamp>.png`, `<stamp>-thumb.png`, a name that never repeats); images over 25 MB as PNG
+//!   or 50 megapixels are skipped, and past 500 MB in all the oldest unpinned images go.
 //! - "files": the absolute paths of copied files (Explorer, Finder), never the files themselves.
 //!   The names are also kept in `text`, so search finds them.
 //! When a copy holds several kinds, files win over text and text over an image (an Excel range
@@ -43,6 +44,8 @@ const MAX_ITEM_BYTES: usize = 100 * 1024;
 const MAX_IMAGE_BYTES: usize = 25 * 1024 * 1024;
 /// Images with more pixels than this (about 200 MB of RGBA) are skipped without encoding.
 const MAX_IMAGE_PIXELS: u64 = 50_000_000;
+/// Most disk space clipboard-images may use; past it the oldest unpinned images are deleted.
+const MAX_IMAGES_DIR_BYTES: u64 = 500 * 1024 * 1024;
 /// Longest side of an image's thumbnail.
 const THUMB_SIZE: u32 = 256;
 const IMAGES_DIR: &str = "clipboard-images";
@@ -147,6 +150,11 @@ fn open_db(app: &AppHandle) -> Connection {
         applog::error(&format!("clipboard: cannot open clipboard.db ({e}); history is kept in memory only"));
         Connection::open_in_memory().expect("in-memory SQLite")
     });
+    create_tables(&conn);
+    conn
+}
+
+fn create_tables(conn: &Connection) {
     let setup = conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS items (
              id INTEGER PRIMARY KEY,
@@ -163,10 +171,9 @@ fn open_db(app: &AppHandle) -> Connection {
     if let Err(e) = setup {
         applog::error(&format!("clipboard: cannot create tables: {e}"));
     }
-    if let Err(e) = migrate(&conn) {
+    if let Err(e) = migrate(conn) {
         applog::error(&format!("clipboard: cannot add the image and file columns: {e}"));
     }
-    conn
 }
 
 /// 0.1.6: images and files. Adds the new columns to an existing table (old rows become "text").
@@ -250,8 +257,23 @@ fn delete_expired(conn: &Connection, images: &Path) -> usize {
     delete_where(conn, images, "pinned = 0 AND created_at < ?1", params![cutoff]).unwrap_or(0)
 }
 
+/// True when the connection is a database file, not the in-memory fallback (which has no rows,
+/// so every image would look unused).
+fn is_file_db(conn: &Connection) -> bool {
+    conn.query_row("SELECT file FROM pragma_database_list WHERE name = 'main'", [], |r| {
+        r.get::<_, Option<String>>(0)
+    })
+    .ok()
+    .flatten()
+    .is_some_and(|f| !f.is_empty())
+}
+
 /// Image files no row uses: left over when the app quit during a Keep change's undo time.
 fn remove_orphan_images(conn: &Connection, images: &Path) {
+    if !is_file_db(conn) {
+        applog::info("clipboard: history is in memory, unused image files are left alone");
+        return;
+    }
     let Ok(entries) = fs::read_dir(images) else { return };
     let paths: Vec<Option<String>> =
         entries.filter_map(Result::ok).map(|e| Some(e.path().to_string_lossy().into_owned())).collect();
@@ -259,6 +281,54 @@ fn remove_orphan_images(conn: &Connection, images: &Path) {
     if removed > 0 {
         applog::info(&format!("clipboard: removed {removed} unused image file(s)"));
     }
+}
+
+fn file_size(path: &Option<String>) -> u64 {
+    path.as_deref().and_then(|p| fs::metadata(p).ok()).map_or(0, |m| m.len())
+}
+
+/// Deletes the oldest unpinned images until the image files the rows own (picture and
+/// thumbnail) add up to at most `cap` bytes. Never deletes `keep_id`, the image just recorded.
+/// Returns how many images were deleted.
+fn enforce_images_cap(conn: &Connection, images: &Path, cap: u64, keep_id: i64) -> usize {
+    // (id, pinned, bytes), oldest first.
+    let rows: Vec<(i64, bool, u64)> = {
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT id, pinned, image_path, thumb_path FROM items WHERE kind = 'image'
+             ORDER BY created_at, id",
+        ) else {
+            return 0;
+        };
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, bool>(1)?, file_size(&r.get(2)?) + file_size(&r.get(3)?)))
+        });
+        let rows: Vec<(i64, bool, u64)> = match rows {
+            Ok(rows) => rows.filter_map(Result::ok).collect(),
+            Err(_) => return 0,
+        };
+        rows
+    };
+    let mut total: u64 = rows.iter().map(|&(_, _, size)| size).sum();
+    let mut deleted = 0;
+    for (id, pinned, size) in rows {
+        if total <= cap {
+            break;
+        }
+        if pinned || id == keep_id {
+            continue;
+        }
+        if delete_where(conn, images, "id = ?1", params![id]).unwrap_or(0) > 0 {
+            total = total.saturating_sub(size);
+            deleted += 1;
+        }
+    }
+    if deleted > 0 {
+        applog::info(&format!(
+            "clipboard: images over {} MB, deleted the {deleted} oldest unpinned",
+            cap / (1024 * 1024)
+        ));
+    }
+    deleted
 }
 
 /// The newest row: (id, kind, text, content_hash).
@@ -310,6 +380,47 @@ fn file_name(path: &str) -> &str {
     path.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or(path)
 }
 
+/// A UNC path (\\server\share\..., also \\?\UNC\...) or, on Windows, a path on a mapped network
+/// drive: looking it up can hang for a long time when the server is offline.
+fn is_network_path(path: &str) -> bool {
+    let p = path.replace('/', "\\");
+    let local = match p.strip_prefix(r"\\?\").or_else(|| p.strip_prefix(r"\\.\")) {
+        Some(rest) if rest.get(..4).is_some_and(|s| s.eq_ignore_ascii_case(r"UNC\")) => return true,
+        Some(rest) => rest,
+        None if p.starts_with(r"\\") => return true,
+        None => p.as_str(),
+    };
+    drive_root(local).is_some_and(|root| is_remote_drive(&root))
+}
+
+/// The drive root of a Windows path ("Z:\" for "Z:\folder\a.txt").
+fn drive_root(path: &str) -> Option<String> {
+    match path.as_bytes() {
+        [letter, b':', ..] if letter.is_ascii_alphabetic() => Some(format!("{}:\\", *letter as char)),
+        _ => None,
+    }
+}
+
+/// Whether a drive root is a mapped network drive (asks Windows only, not the server).
+#[cfg(windows)]
+fn is_remote_drive(root: &str) -> bool {
+    const DRIVE_REMOTE: u32 = 4;
+    let wide: Vec<u16> = root.encode_utf16().chain(Some(0)).collect();
+    // SAFETY: `wide` is a NUL-terminated UTF-16 string that outlives the call.
+    unsafe { windows_sys::Win32::Storage::FileSystem::GetDriveTypeW(wide.as_ptr()) == DRIVE_REMOTE }
+}
+
+#[cfg(not(windows))]
+fn is_remote_drive(_root: &str) -> bool {
+    false
+}
+
+/// Whether a copied file is still there. Network paths are not looked up (counted as there),
+/// so an offline share cannot freeze the list or a copy-back.
+fn file_present(path: &str) -> bool {
+    is_network_path(path) || Path::new(path).exists()
+}
+
 /// Stores a newly copied list of files (paths only). Returns true when the list changed.
 fn record_files(conn: &Connection, paths: &[String]) -> bool {
     if paths.is_empty() {
@@ -337,6 +448,81 @@ fn record_files(conn: &Connection, paths: &[String]) -> bool {
             ok
         }
     }
+}
+
+/// A file name stem that never repeats (row ids can come back after a delete): the time in
+/// nanoseconds plus a random number.
+fn new_image_stem() -> String {
+    use std::hash::BuildHasher;
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let random = std::collections::hash_map::RandomState::new().hash_one(nanos);
+    format!("{nanos:x}-{random:016x}")
+}
+
+fn too_many_pixels(width: u32, height: u32) -> bool {
+    width as u64 * height as u64 > MAX_IMAGE_PIXELS
+}
+
+/// Width and height from a PNG header (IHDR), without decoding the image.
+#[cfg_attr(not(any(windows, target_os = "macos", test)), allow(dead_code))]
+fn png_dims(b: &[u8]) -> Option<(u32, u32)> {
+    if b.len() < 24 || &b[..8] != b"\x89PNG\r\n\x1a\n" || &b[12..16] != b"IHDR" {
+        return None;
+    }
+    let be = |i: usize| u32::from_be_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]);
+    Some((be(16), be(20)))
+}
+
+/// Width and height from a TIFF's first directory (tags 256 and 257), without decoding it.
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+fn tiff_dims(b: &[u8]) -> Option<(u32, u32)> {
+    let le = match b.get(..4)? {
+        b"II*\0" => true,
+        b"MM\0*" => false,
+        _ => return None,
+    };
+    let u16_at = |i: usize| -> Option<u32> {
+        let x = [*b.get(i)?, *b.get(i + 1)?];
+        let v = if le { u16::from_le_bytes(x) } else { u16::from_be_bytes(x) };
+        Some(v as u32)
+    };
+    let u32_at = |i: usize| -> Option<u32> {
+        let x = [*b.get(i)?, *b.get(i + 1)?, *b.get(i + 2)?, *b.get(i + 3)?];
+        Some(if le { u32::from_le_bytes(x) } else { u32::from_be_bytes(x) })
+    };
+    let ifd = u32_at(4)? as usize;
+    let (mut width, mut height) = (None, None);
+    for n in 0..u16_at(ifd)? as usize {
+        let e = ifd + 2 + n * 12;
+        let value = match u16_at(e + 2)? {
+            3 => u16_at(e + 8)?, // SHORT
+            4 => u32_at(e + 8)?, // LONG
+            _ => continue,
+        };
+        match u16_at(e)? {
+            256 => width = Some(value),
+            257 => height = Some(value),
+            _ => {}
+        }
+    }
+    Some((width?, height?))
+}
+
+/// Width and height from a DIB header (BITMAPCOREHEADER, or BITMAPINFOHEADER and later).
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+fn dib_dims(b: &[u8]) -> Option<(u32, u32)> {
+    let size = u32::from_le_bytes(b.get(..4)?.try_into().ok()?);
+    if size == 12 {
+        let w = u16::from_le_bytes(b.get(4..6)?.try_into().ok()?);
+        let h = u16::from_le_bytes(b.get(6..8)?.try_into().ok()?);
+        return Some((w as u32, h as u32));
+    }
+    if size < 40 {
+        return None;
+    }
+    let w = i32::from_le_bytes(b.get(4..8)?.try_into().ok()?);
+    let h = i32::from_le_bytes(b.get(8..12)?.try_into().ok()?);
+    Some((w.unsigned_abs(), h.unsigned_abs())) // a negative height means top-down rows
 }
 
 /// PNG bytes of an RGBA image (fast compression).
@@ -369,7 +555,7 @@ fn record_image(state: &Clipboard, image: &Image<'_>) -> bool {
     if width == 0 || height == 0 || image.rgba().len() != width as usize * height as usize * 4 {
         return false;
     }
-    if width as u64 * height as u64 > MAX_IMAGE_PIXELS {
+    if too_many_pixels(width, height) {
         applog::info(&format!("clipboard: image skipped ({width}x{height}, too large)"));
         return false;
     }
@@ -422,8 +608,9 @@ fn record_image(state: &Clipboard, image: &Image<'_>) -> bool {
         return false;
     }
     let id = conn.last_insert_rowid();
-    let image_path = state.images.join(format!("{id}.png"));
-    let thumb_path = state.images.join(format!("{id}-thumb.png"));
+    let stem = new_image_stem();
+    let image_path = state.images.join(format!("{stem}.png"));
+    let thumb_path = state.images.join(format!("{stem}-thumb.png"));
     let written = fs::write(&image_path, &png)
         .and_then(|_| fs::write(&thumb_path, &thumb))
         .map_err(|e| e.to_string())
@@ -442,6 +629,7 @@ fn record_image(state: &Clipboard, image: &Image<'_>) -> bool {
         return false;
     }
     applog::info(&format!("clipboard: recorded image {width}x{height} ({} KB)", png.len() / 1024));
+    enforce_images_cap(&conn, &state.images, MAX_IMAGES_DIR_BYTES, id);
     true
 }
 
@@ -505,6 +693,43 @@ fn watch(app: AppHandle) {
     const SKIP_TYPES: [&str; 2] = ["org.nspasteboard.ConcealedType", "org.nspasteboard.TransientType"];
     const IMAGE_TYPES: [&str; 2] = ["public.png", "public.tiff"];
 
+    fn types_of(pasteboard: &NSPasteboard) -> Vec<String> {
+        pasteboard.types().map(|t| t.to_vec().iter().map(|s| s.to_string()).collect()).unwrap_or_default()
+    }
+
+    fn is_private(types: &[String]) -> bool {
+        types.iter().any(|t| SKIP_TYPES.contains(&t.as_str()))
+    }
+
+    fn read_copy(app: &AppHandle, pasteboard: &NSPasteboard, types: &[String]) -> Option<Copied> {
+        if types.iter().any(|t| t == mac::FILE_URL) {
+            let files = mac::read_files(pasteboard);
+            if !files.is_empty() {
+                return Some(Copied::Files(files));
+            }
+        }
+        // SAFETY: NSPasteboardTypeString is a constant NSString exported by AppKit.
+        let string_type = unsafe { NSPasteboardTypeString };
+        if let Some(text) = pasteboard.stringForType(string_type) {
+            return Some(Copied::Text(text.to_string()));
+        }
+        if types.iter().any(|t| IMAGE_TYPES.contains(&t.as_str())) {
+            // Checked from the PNG or TIFF header first, so a huge image is never decoded.
+            if let Some((w, h)) = mac::image_dims(pasteboard, &IMAGE_TYPES).filter(|&(w, h)| too_many_pixels(w, h)) {
+                applog::info(&format!("clipboard: image skipped ({w}x{h}, too large)"));
+                return None;
+            }
+            return match app.clipboard().read_image() {
+                Ok(image) => Some(Copied::Image(owned(&image))),
+                Err(e) => {
+                    applog::warn(&format!("clipboard: could not read the copied image: {e}"));
+                    None
+                }
+            };
+        }
+        None
+    }
+
     let mut last_count = NSPasteboard::generalPasteboard().changeCount() as i64;
     let mut last_cleanup = Instant::now();
     loop {
@@ -523,33 +748,23 @@ fn watch(app: AppHandle) {
                 applog::info("clipboard: skipped our own copy");
                 return None;
             }
-            let types: Vec<String> =
-                pasteboard.types().map(|t| t.to_vec().iter().map(|s| s.to_string()).collect()).unwrap_or_default();
-            if types.iter().any(|t| SKIP_TYPES.contains(&t.as_str())) {
+            let types = types_of(&pasteboard);
+            if is_private(&types) {
                 applog::info("clipboard: skipped a private copy");
                 return None;
             }
-            if types.iter().any(|t| t == mac::FILE_URL) {
-                let files = mac::read_files(&pasteboard);
-                if !files.is_empty() {
-                    return Some(Copied::Files(files));
-                }
+            let copied = read_copy(&app, &pasteboard, &types)?;
+            // The private marker and the content must belong to the same copy: a password
+            // manager may still have been writing, so look again before anything is stored.
+            if pasteboard.changeCount() as i64 != count {
+                applog::info("clipboard: the copy changed while it was read, reading it again");
+                return None; // last_count is behind now, so the next tick reads the new copy
             }
-            // SAFETY: NSPasteboardTypeString is a constant NSString exported by AppKit.
-            let string_type = unsafe { NSPasteboardTypeString };
-            if let Some(text) = pasteboard.stringForType(string_type) {
-                return Some(Copied::Text(text.to_string()));
+            if is_private(&types_of(&pasteboard)) {
+                applog::info("clipboard: skipped a private copy");
+                return None;
             }
-            if types.iter().any(|t| IMAGE_TYPES.contains(&t.as_str())) {
-                return match app.clipboard().read_image() {
-                    Ok(image) => Some(Copied::Image(owned(&image))),
-                    Err(e) => {
-                        applog::warn(&format!("clipboard: could not read the copied image: {e}"));
-                        None
-                    }
-                };
-            }
-            None
+            Some(copied)
         });
         if let Some(copied) = copied {
             on_copy(&app, copied);
@@ -608,6 +823,17 @@ mod mac {
     pub fn change_count() -> i64 {
         objc2::rc::autoreleasepool(|_| NSPasteboard::generalPasteboard().changeCount() as i64)
     }
+
+    /// Width and height of the copied PNG or TIFF, read from its header (not decoded).
+    pub fn image_dims(pasteboard: &NSPasteboard, types: &[&str]) -> Option<(u32, u32)> {
+        types.iter().find_map(|t| {
+            let data = pasteboard.dataForType(&NSString::from_str(t))?;
+            // SAFETY: the NSData is immutable and kept alive by `data` while the slice is used.
+            let bytes = unsafe { data.as_bytes_unchecked() };
+            let dims = super::png_dims(bytes).or_else(|| super::tiff_dims(bytes));
+            dims
+        })
+    }
 }
 
 /// Windows: watch the clipboard sequence number (no clipboard access while nothing changes).
@@ -651,6 +877,11 @@ fn watch(app: AppHandle) {
             }
         } else if win::has_image() {
             last_seq = seq;
+            // Checked from the PNG or DIB header first, so a huge image is never decoded.
+            if let Some((w, h)) = win::image_dims().filter(|&(w, h)| too_many_pixels(w, h)) {
+                applog::info(&format!("clipboard: image skipped ({w}x{h}, too large)"));
+                continue;
+            }
             match app.clipboard().read_image() {
                 Ok(image) => Copied::Image(owned(&image)),
                 Err(e) => {
@@ -662,6 +893,25 @@ fn watch(app: AppHandle) {
             last_seq = seq;
             continue;
         };
+        // The private marker and the content must belong to the same copy: a password manager
+        // may still have been writing when the marker was checked, so look again before storing.
+        if win::seq() != seq {
+            applog::info("clipboard: the copy changed while it was read, reading it again");
+            last_seq = -1; // read the newer copy on the next tick
+            continue;
+        }
+        match win::is_private_copy() {
+            None => {
+                last_seq = -1; // clipboard busy: read this copy again on the next tick
+                continue;
+            }
+            Some(true) => {
+                last_seq = seq;
+                applog::info("clipboard: skipped a private copy");
+                continue;
+            }
+            Some(false) => {}
+        }
         last_seq = seq;
         on_copy(&app, copied);
     }
@@ -769,6 +1019,35 @@ mod win {
             CloseClipboard();
             Some(private)
         }
+    }
+
+    /// The first `n` bytes of a clipboard format. None when it is missing, shorter or busy.
+    fn head(f: u32, n: usize) -> Option<Vec<u8>> {
+        if !has(f) || !open(std::ptr::null_mut()) {
+            return None;
+        }
+        // SAFETY: the clipboard is open until CloseClipboard below; the handle is only read
+        // while locked, and only within the size GlobalSize reports.
+        unsafe {
+            let mut out = None;
+            let data = GetClipboardData(f);
+            if data as usize != 0 && GlobalSize(data as _) >= n {
+                let ptr = GlobalLock(data as _) as *const u8;
+                if !ptr.is_null() {
+                    out = Some(std::slice::from_raw_parts(ptr, n).to_vec());
+                    GlobalUnlock(data as _);
+                }
+            }
+            CloseClipboard();
+            out
+        }
+    }
+
+    /// Width and height of the copied image from its PNG or DIB header (not decoded).
+    pub fn image_dims() -> Option<(u32, u32)> {
+        head(format("PNG"), 24)
+            .and_then(|b| super::png_dims(&b))
+            .or_else(|| head(CF_DIB, 12).and_then(|b| super::dib_dims(&b)))
     }
 
     /// The paths in CF_HDROP (Explorer's copied files). None when the clipboard is busy.
@@ -950,7 +1229,7 @@ fn clipboard_list(
     let rows = stmt.query_map(params![query.trim(), kind, LIST_LIMIT], item_from_row).map_err(err)?;
     let mut items = rows.collect::<Result<Vec<_>, _>>().map_err(err)?;
     for item in items.iter_mut().filter(|i| i.kind == "files") {
-        item.missing = item.files.iter().filter(|p| !Path::new(p).exists()).count();
+        item.missing = item.files.iter().filter(|p| !file_present(p)).count();
     }
     Ok(items)
 }
@@ -1027,7 +1306,7 @@ fn copy_image(app: &AppHandle, item: &Item) -> Result<Option<i64>, String> {
 
 /// Puts back the files that still exist; fails if none does.
 fn copy_files(app: &AppHandle, item: &Item) -> Result<Option<i64>, String> {
-    let existing: Vec<String> = item.files.iter().filter(|p| Path::new(p).exists()).cloned().collect();
+    let existing: Vec<String> = item.files.iter().filter(|p| file_present(p)).cloned().collect();
     if existing.is_empty() {
         return Err(if item.files.len() == 1 {
             "The file is no longer there".into()
@@ -1234,4 +1513,192 @@ pub fn commands() -> impl Fn(Invoke) -> bool + Send + Sync + 'static {
         clipboard_drop_files,
         clipboard_undo_keep
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A new empty folder under the system temp folder.
+    fn temp_dir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("hl-desk-test-{}", new_image_stem()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn db_in_memory() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn);
+        conn
+    }
+
+    /// An image row with an image and a thumbnail file of `bytes` bytes each.
+    fn add_image(conn: &Connection, images: &Path, name: &str, created_at: i64, pinned: bool, bytes: usize) -> i64 {
+        let image = images.join(format!("{name}.png"));
+        let thumb = images.join(format!("{name}-thumb.png"));
+        fs::write(&image, vec![0u8; bytes]).unwrap();
+        fs::write(&thumb, vec![0u8; bytes]).unwrap();
+        conn.execute(
+            "INSERT INTO items (kind, text, image_path, thumb_path, created_at, pinned)
+             VALUES ('image', '', ?1, ?2, ?3, ?4)",
+            params![image.to_string_lossy(), thumb.to_string_lossy(), created_at, pinned],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    fn ids(conn: &Connection) -> Vec<i64> {
+        let mut stmt = conn.prepare("SELECT id FROM items ORDER BY id").unwrap();
+        let rows = stmt.query_map([], |r| r.get(0)).unwrap();
+        let ids: Vec<i64> = rows.map(Result::unwrap).collect();
+        ids
+    }
+
+    #[test]
+    fn image_names_never_repeat() {
+        let names: std::collections::HashSet<String> = (0..1000).map(|_| new_image_stem()).collect();
+        assert_eq!(names.len(), 1000);
+        assert!(names.iter().all(|n| n.chars().all(|c| c.is_ascii_hexdigit() || c == '-')));
+    }
+
+    #[test]
+    fn network_paths_are_detected() {
+        assert!(is_network_path(r"\\server\share\a.txt"));
+        assert!(is_network_path("//server/share/a.txt"));
+        assert!(is_network_path(r"\\?\UNC\server\share\a.txt"));
+        assert!(is_network_path(r"\\?\unc\server\share\a.txt"));
+        assert!(!is_network_path(r"\\?\C:\a.txt"));
+        assert!(!is_network_path(r"C:\Users\a.txt"));
+        assert!(!is_network_path("/Users/a.txt"));
+        assert!(!is_network_path(""));
+        assert_eq!(drive_root(r"Z:\share\a.txt").as_deref(), Some(r"Z:\"));
+        assert_eq!(drive_root("z:/a.txt").as_deref(), Some(r"z:\"));
+        assert_eq!(drive_root(r"\Users\a.txt"), None);
+        assert_eq!(drive_root("1:"), None);
+        // The system drive is never a network drive.
+        assert!(!is_network_path(r"\\?\C:\Windows\a.txt"));
+        // Not looked up, so counted as present even though the server does not exist.
+        assert!(file_present(r"\\hl-desk-no-such-server\share\a.txt"));
+    }
+
+    #[test]
+    fn pixel_cap() {
+        assert!(!too_many_pixels(7680, 4320));
+        assert!(too_many_pixels(10_000, 5_001));
+        assert!(too_many_pixels(u32::MAX, u32::MAX));
+    }
+
+    #[test]
+    fn image_sizes_from_headers() {
+        let png = png_bytes(&[0u8; 3 * 2 * 4], 3, 2).unwrap();
+        assert_eq!(png_dims(&png), Some((3, 2)));
+        assert_eq!(png_dims(b"not a png at all, not a png"), None);
+
+        // Little-endian TIFF: width LONG 70000, height SHORT 300.
+        let mut le = b"II*\0".to_vec();
+        le.extend_from_slice(&8u32.to_le_bytes());
+        le.extend_from_slice(&2u16.to_le_bytes());
+        for (tag, kind, value) in [(256u16, 4u16, 70_000u32), (257, 3, 300)] {
+            le.extend_from_slice(&tag.to_le_bytes());
+            le.extend_from_slice(&kind.to_le_bytes());
+            le.extend_from_slice(&1u32.to_le_bytes());
+            le.extend_from_slice(&value.to_le_bytes()); // a SHORT sits in the first two bytes
+        }
+        assert_eq!(tiff_dims(&le), Some((70_000, 300)));
+
+        // Big-endian TIFF: width SHORT 640, height LONG 480.
+        let mut be = b"MM\0*".to_vec();
+        be.extend_from_slice(&8u32.to_be_bytes());
+        be.extend_from_slice(&2u16.to_be_bytes());
+        be.extend_from_slice(&256u16.to_be_bytes());
+        be.extend_from_slice(&3u16.to_be_bytes());
+        be.extend_from_slice(&1u32.to_be_bytes());
+        be.extend_from_slice(&[0x02, 0x80, 0, 0]);
+        be.extend_from_slice(&257u16.to_be_bytes());
+        be.extend_from_slice(&4u16.to_be_bytes());
+        be.extend_from_slice(&1u32.to_be_bytes());
+        be.extend_from_slice(&480u32.to_be_bytes());
+        assert_eq!(tiff_dims(&be), Some((640, 480)));
+        assert_eq!(tiff_dims(&be[..20]), None); // cut short
+
+        let mut dib = 40u32.to_le_bytes().to_vec();
+        dib.extend_from_slice(&1920i32.to_le_bytes());
+        dib.extend_from_slice(&(-1080i32).to_le_bytes());
+        assert_eq!(dib_dims(&dib), Some((1920, 1080)));
+        assert_eq!(dib_dims(&[1, 2, 3]), None);
+    }
+
+    #[test]
+    fn orphan_cleanup_leaves_files_alone_with_in_memory_db() {
+        let images = temp_dir();
+        let file = images.join("old.png");
+        fs::write(&file, b"x").unwrap();
+        let conn = db_in_memory();
+        assert!(!is_file_db(&conn));
+        remove_orphan_images(&conn, &images);
+        assert!(file.exists());
+        let _ = fs::remove_dir_all(&images);
+    }
+
+    #[test]
+    fn orphan_cleanup_removes_unused_files_with_file_db() {
+        let dir = temp_dir();
+        let images = dir.join(IMAGES_DIR);
+        fs::create_dir_all(&images).unwrap();
+        let conn = Connection::open(dir.join("clipboard.db")).unwrap();
+        create_tables(&conn);
+        assert!(is_file_db(&conn));
+        add_image(&conn, &images, "kept", 1, false, 1);
+        let orphan = images.join("orphan.png");
+        fs::write(&orphan, b"x").unwrap();
+        remove_orphan_images(&conn, &images);
+        assert!(!orphan.exists());
+        assert!(images.join("kept.png").exists() && images.join("kept-thumb.png").exists());
+        drop(conn);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn size_cap_deletes_oldest_unpinned_first() {
+        let images = temp_dir();
+        let conn = db_in_memory();
+        // 200 bytes per image (picture + thumbnail), 600 in all.
+        let pinned = add_image(&conn, &images, "a", 1, true, 100);
+        add_image(&conn, &images, "b", 2, false, 100);
+        let newer = add_image(&conn, &images, "c", 3, false, 100);
+
+        assert_eq!(enforce_images_cap(&conn, &images, 600, newer), 0);
+        assert_eq!(enforce_images_cap(&conn, &images, 400, newer), 1);
+        assert_eq!(ids(&conn), vec![pinned, newer]);
+        assert!(!images.join("b.png").exists() && !images.join("b-thumb.png").exists());
+        assert!(images.join("a.png").exists() && images.join("c.png").exists());
+
+        // Pinned images and the image just recorded are never deleted, even when the pinned
+        // ones alone are over the cap.
+        assert_eq!(enforce_images_cap(&conn, &images, 0, newer), 0);
+        assert_eq!(ids(&conn), vec![pinned, newer]);
+        assert!(images.join("a.png").exists() && images.join("c.png").exists());
+
+        // Any other unpinned image does go.
+        assert_eq!(enforce_images_cap(&conn, &images, 0, -1), 1);
+        assert_eq!(ids(&conn), vec![pinned]);
+        let _ = fs::remove_dir_all(&images);
+    }
+
+    #[test]
+    fn size_cap_counts_only_files_rows_own() {
+        let images = temp_dir();
+        let conn = db_in_memory();
+        let older = add_image(&conn, &images, "a", 1, false, 100);
+        let newer = add_image(&conn, &images, "b", 2, false, 100);
+        // A file no row owns (an orphan or one waiting for a Keep undo) is not counted, so it
+        // cannot make the cap wipe the history.
+        fs::write(images.join("orphan.png"), vec![0u8; 5000]).unwrap();
+        assert_eq!(enforce_images_cap(&conn, &images, 400, newer), 0);
+        assert_eq!(ids(&conn), vec![older, newer]);
+        assert_eq!(enforce_images_cap(&conn, &images, 300, newer), 1);
+        assert_eq!(ids(&conn), vec![newer]);
+        assert!(images.join("orphan.png").exists());
+        let _ = fs::remove_dir_all(&images);
+    }
 }
