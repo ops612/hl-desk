@@ -35,7 +35,9 @@ body.popover { border: 1px solid var(--border); }
   display: flex; flex: none; align-items: center; justify-content: space-between;
   padding: 8px 8px 4px var(--inset); cursor: default; user-select: none; -webkit-user-select: none;
 }
-.wordmark { font-size: 11px; font-weight: 500; letter-spacing: 2px; }
+.wordmark { display: inline-flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 500; letter-spacing: 2px; }
+/* The logo before the wordmark; clicks pass through so the header still drags the window. */
+.wordmark-logo { flex: none; pointer-events: none; }
 .header-actions { display: flex; gap: 2px; }
 /* Pin: pressed = the popover stays open and on top (lib.rs shell_set_pinned). */
 .pin-btn[aria-pressed="true"] { background: var(--indigo-tint); color: var(--indigo); }
@@ -96,10 +98,15 @@ textarea.field { height: auto; padding: 8px 10px; resize: none; }
   flex: 1; min-height: 0; overflow-y: auto; margin: 0; padding: 0 var(--inset) var(--inset); list-style: none;
 }
 .row {
-  display: block; width: 100%; padding: 8px 10px; border: 0; border-radius: var(--radius-sm);
+  position: relative; display: block; width: 100%; padding: 8px 10px; border: 0; border-radius: var(--radius-sm);
   background: none; font-size: 12px; text-align: left; cursor: pointer;
 }
-.row + .row { margin-top: 2px; }
+/* A thin line in the gap between rows, inset like the row text, so the highlight stays rounded. */
+.row + .row { margin-top: 3px; }
+.row + .row::before {
+  content: ""; position: absolute; left: 10px; right: 10px; top: -2px; height: 1px; background: var(--border);
+  pointer-events: none;
+}
 .row:hover { background: var(--bg); }
 .row.selected, .row[aria-selected="true"] { background: var(--indigo-tint); }
 .hint { font-size: 11px; color: var(--muted); }
