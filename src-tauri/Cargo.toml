@@ -38,7 +38,7 @@ xcap = "0.9"
 # org.nspasteboard.ConcealedType (password managers).
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSArray", "NSURL"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSArray", "NSURL", "NSData"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard", "NSPasteboardItem", "NSApplication", "NSResponder"] }
 
 # Windows clipboard formats for the clipboard feature: skip copies marked private
