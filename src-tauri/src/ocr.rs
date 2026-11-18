@@ -254,6 +254,7 @@ pub(crate) fn no_chinese_error(available: &[String]) -> String {
 mod platform {
     use windows::{
         core::HSTRING,
+        Foundation::AsyncStatus,
         Globalization::Language,
         Graphics::Imaging::{BitmapPixelFormat, SoftwareBitmap},
         Media::Ocr::OcrEngine,
@@ -340,7 +341,12 @@ mod platform {
         )
         .map_err(err)?;
 
-        let result = engine.RecognizeAsync(&bitmap).map_err(err)?.get().map_err(err)?;
+        // This is a worker thread: wait for the async call by polling its status.
+        let op = engine.RecognizeAsync(&bitmap).map_err(err)?;
+        while op.Status().map_err(err)? == AsyncStatus::Started {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let result = op.GetResults().map_err(err)?;
         let ocr_lines = result.Lines().map_err(err)?;
         let mut lines = Vec::new();
         for i in 0..ocr_lines.Size().map_err(err)? {
@@ -562,6 +568,37 @@ mod tests {
         assert!(may_hold_unread_chinese(&[line("ä¸ Ei 'Ll fE", 0.0, 0.0, 1.0, 1.0)]));
         assert!(!may_hold_unread_chinese(&[line("Go to Settings and click OK", 0.0, 0.0, 1.0, 1.0)]));
         assert!(!may_hold_unread_chinese(&[line("Total 12 34 HK$500", 0.0, 0.0, 1.0, 1.0)]));
+    }
+
+    /// Real Vision run on a committed 560x180 PNG with two lines:
+    /// "報價單 Q-2311" above "Unit price HK$12.5".
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn vision_reads_the_fixture() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/ocr-sample.png");
+        let out = platform::recognize(path).expect("Vision OCR failed");
+        println!("ocr fixture: language {}", out.language);
+        for l in &out.lines {
+            println!("ocr fixture: {:?} at {:.0},{:.0} {:.0}x{:.0}", l.text, l.x, l.y, l.w, l.h);
+        }
+        assert_eq!(out.language, "zh-Hant");
+        let find = |needle: &str| {
+            out.lines
+                .iter()
+                .find(|l| l.text.contains(needle))
+                .unwrap_or_else(|| panic!("{needle:?} not found in {:?}", out.lines))
+        };
+        let quote = find("Q-2311");
+        assert!(quote.text.contains("報價單"), "Chinese not read: {:?}", quote.text);
+        let price = find("Unit price");
+        assert!(price.text.contains("12.5"), "price not read: {:?}", price.text);
+        // Top-left pixel boxes: the quote line is above the price line, both inside the image.
+        assert!(quote.y + quote.h <= price.y + 1.0, "{quote:?} should be above {price:?}");
+        for l in [quote, price] {
+            assert!(l.x >= 0.0 && l.y >= 0.0 && l.x + l.w <= 561.0 && l.y + l.h <= 181.0, "{l:?}");
+            assert!(l.x > 10.0 && l.x < 60.0, "left edge near 30 px: {l:?}");
+        }
+        assert!(quote.y < 60.0 && price.y > 80.0, "rows near 30 and 100 px: {quote:?} {price:?}");
     }
 
     #[test]
