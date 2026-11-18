@@ -254,13 +254,13 @@ pub(crate) fn no_chinese_error(available: &[String]) -> String {
 mod platform {
     use windows::{
         core::HSTRING,
-        Foundation::AsyncStatus,
         Globalization::Language,
         Graphics::Imaging::{BitmapPixelFormat, SoftwareBitmap},
         Media::Ocr::OcrEngine,
         Storage::Streams::DataWriter,
         System::UserProfile::GlobalizationPreferences,
     };
+    use windows_future::AsyncStatus;
     use xcap::image::imageops::{self, FilterType};
 
     use super::{
