@@ -36,11 +36,16 @@ const api = {
   remove: (id: number) => invoke<void>("notes_delete", { id }),
   dictationStatus: () => invoke<{ available: boolean; off: boolean }>("notes_dictation_status"),
   dictate: () => invoke<boolean>("notes_dictate"),
-  dictationStop: () => invoke<void>("notes_dictation_stop"),
+  dictationStop: (end: boolean) => invoke<void>("notes_dictation_stop", { end }),
 };
 
 /** Same as the popover's blur guard in notes.rs: dictation may run this long after the click. */
 const DICTATION_MS = 60_000;
+/** No text this long after a start: dictation most likely did not start. */
+const DICTATION_QUIET_MS = 10_000;
+const DICTATION_TROUBLE = isMac
+  ? "No dictation text yet. If it didn't start, check System Settings > Keyboard > Dictation."
+  : "No dictation text yet. If it didn't start, check Settings > Privacy > Speech > Online speech recognition.";
 const DICTATION_SETTINGS_URL = "x-apple.systempreferences:com.apple.Keyboard-Settings.extension";
 
 function log(level: "info" | "warn" | "error", message: string): void {
@@ -236,6 +241,7 @@ export function mount(el: HTMLElement): void {
     search.toggleAttribute("data-autofocus", !editor);
     textarea.toggleAttribute("data-autofocus", editor);
     status.textContent = "";
+    voiceTrouble = false;
     if (!editor) stopDictation();
     renderVoice();
   }
@@ -315,6 +321,11 @@ export function mount(el: HTMLElement): void {
     if (!draft) return;
     draft.body = textarea.value;
     draft.dirty = true;
+    clearTimeout(quietTimer);
+    if (voiceTrouble) {
+      voiceTrouble = false;
+      renderVoice();
+    }
     clearTimeout(saveTimer);
     // A new note is created on its first character (so it counts at once); then autosave.
     if (draft.id === null && draft.body.trim()) void save();
@@ -378,11 +389,16 @@ export function mount(el: HTMLElement): void {
   let voice: { available: boolean; off: boolean } | null = null;
   let dictating = false;
   let dictationTimer: number | undefined;
+  /** Fires when nothing was typed for a while after a start. */
+  let quietTimer: number | undefined;
+  /** Show the "didn't start" hint (a failed start, or no text after one). */
+  let voiceTrouble = false;
 
   function renderVoice(): void {
     const editor = !editorView.hidden;
     countEl.hidden = editor;
     voiceHint.hidden = !editor;
+    voiceHint.classList.toggle("warn", voiceTrouble);
     mic.hidden = voice !== null && !voice.available;
     mic.setAttribute("aria-pressed", String(dictating));
     mic.classList.toggle("active", dictating);
@@ -393,6 +409,8 @@ export function mount(el: HTMLElement): void {
       voiceHint.textContent = isMac ? "Dictation isn't available on this Mac" : "Voice typing isn't available on this PC";
     } else if (off) {
       voiceHint.textContent = "Dictation is off on this Mac";
+    } else if (voiceTrouble) {
+      voiceHint.textContent = DICTATION_TROUBLE;
     } else if (dictating) {
       voiceHint.textContent = "Listening… click the mic or press Esc to stop";
     } else {
@@ -401,12 +419,14 @@ export function mount(el: HTMLElement): void {
     voiceHint.title = voiceHint.textContent;
   }
 
-  function stopDictation(): void {
+  /** end: the user stopped it (mic or Esc), so the computer's dictation is ended too. */
+  function stopDictation(end = false): void {
     clearTimeout(dictationTimer);
+    clearTimeout(quietTimer);
     if (!dictating) return;
     dictating = false;
-    log("info", "dictation stopped");
-    api.dictationStop().catch(() => {});
+    log("info", end ? "dictation stopped by the user" : "dictation stopped");
+    api.dictationStop(end).catch(() => {});
     renderVoice();
   }
 
@@ -416,6 +436,14 @@ export function mount(el: HTMLElement): void {
     const { selectionStart, selectionEnd } = textarea;
     textarea.focus();
     textarea.setSelectionRange(selectionStart, selectionEnd);
+    voiceTrouble = false;
+    // Dictation types into whatever has the focus: never start it unless it is the note.
+    if (document.activeElement !== textarea) {
+      log("warn", "dictation not started: the note does not have the focus");
+      status.textContent = "Click in the note, then try again";
+      renderVoice();
+      return;
+    }
     dictating = true;
     renderVoice();
     log("info", "dictation requested");
@@ -424,6 +452,15 @@ export function mount(el: HTMLElement): void {
     try {
       const started = await api.dictate();
       textarea.focus();
+      if (started && dictating) {
+        clearTimeout(quietTimer);
+        quietTimer = window.setTimeout(() => {
+          if (!dictating) return;
+          log("warn", "dictation: no text yet");
+          voiceTrouble = true;
+          renderVoice();
+        }, DICTATION_QUIET_MS);
+      }
       if (!started) {
         // macOS: nothing took startDictation:, so dictation is most likely off.
         voice = { available: true, off: true };
@@ -433,13 +470,15 @@ export function mount(el: HTMLElement): void {
     } catch (e) {
       log("error", `dictation failed: ${e}`);
       status.textContent = `Could not start dictation: ${e}`;
+      // Not when our window was not in front (notes.rs): the status line already says so.
+      voiceTrouble = !String(e).includes("not the window in front");
       stopDictation();
     }
     renderVoice();
   }
 
   function toggleDictation(): void {
-    if (dictating) stopDictation();
+    if (dictating) stopDictation(true);
     else void startDictation();
   }
 
@@ -474,7 +513,7 @@ export function mount(el: HTMLElement): void {
     } else if (e.key === "Escape" && dictating) {
       // The first Esc stops dictation; the next one closes the window (main.ts).
       e.preventDefault();
-      stopDictation();
+      stopDictation(true);
     }
   });
 

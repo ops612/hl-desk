@@ -218,3 +218,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           compression-level: 0
+
+      # Rust unit tests (after the build, so ../dist exists for generate_context!).
+      - name: Rust unit tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib
