@@ -1,0 +1,35 @@
+# Spike only: does the Bergamot WASM translation page work in macOS WebKit (the engine Tauri uses on Mac)?
+name: spike-webkit
+on:
+  push:
+    branches: [spike/translation-engine]
+    paths: [spike/**, .github/workflows/spike-webkit.yml]
+jobs:
+  webkit:
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Fetch engine and models from Mozilla (sha256 checked)
+        run: node spike/translate/fetch-models.mjs
+      - name: Start the page server
+        run: node spike/translate/serve.mjs 8765 &
+      - name: Install test drivers
+        working-directory: spike/translate/ci
+        run: |
+          npm init -y >/dev/null
+          npm i --no-save playwright@1.49.1 selenium-webdriver@4.27.0
+          npx playwright install webkit
+      - name: Safari (system WebKit, same as Tauri's WKWebView)
+        working-directory: spike/translate/ci
+        run: |
+          sw_vers
+          sudo safaridriver --enable
+          node run-page.mjs safari
+      - name: Playwright WebKit
+        if: always()
+        working-directory: spike/translate/ci
+        run: node run-page.mjs webkit
