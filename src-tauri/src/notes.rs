@@ -314,16 +314,30 @@ fn press_win_h() -> Result<(), String> {
     }
 }
 
-/// macOS: sends startDictation: to the first responder (the focused textarea). Returns whether
-/// something took it.
+/// Windows: true when HL Desk's main window is the foreground window, so keys we send reach it
+/// (and never start Voice typing in another app).
+#[cfg(target_os = "windows")]
+fn main_window_in_front(app: &AppHandle) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+    let Some(ours) = app.get_webview_window("main").and_then(|w| w.hwnd().ok()) else {
+        return false;
+    };
+    let ours: *mut std::ffi::c_void = ours.0 as _;
+    // SAFETY: plain Win32 call with no arguments.
+    let front = unsafe { GetForegroundWindow() };
+    !ours.is_null() && front == ours
+}
+
+/// macOS: sends a dictation action (startDictation: / stopDictation:) to the first responder
+/// (the focused textarea). Returns whether something took it.
 #[cfg(target_os = "macos")]
-fn start_mac_dictation(app: &AppHandle) -> Result<bool, String> {
+fn send_mac_dictation(app: &AppHandle, action: objc2::runtime::Sel) -> Result<bool, String> {
     let (tx, rx) = std::sync::mpsc::channel();
     app.run_on_main_thread(move || {
         let handled = objc2::MainThreadMarker::new().is_some_and(|mtm| {
             let ns_app = objc2_app_kit::NSApplication::sharedApplication(mtm);
             // SAFETY: a standard responder action with no target and no sender.
-            unsafe { ns_app.sendAction_to_from(objc2::sel!(startDictation:), None, None) }
+            unsafe { ns_app.sendAction_to_from(action, None, None) }
         });
         let _ = tx.send(handled);
     })
@@ -334,7 +348,8 @@ fn start_mac_dictation(app: &AppHandle) -> Result<bool, String> {
 
 /// Mic button / Ctrl+Shift+D: the page has focused the textarea at the cursor; this makes sure
 /// the window has the focus, then starts the computer's dictation. Returns false on macOS when
-/// nothing took the action (dictation is probably off).
+/// nothing took the action (dictation is probably off). Windows: nothing is sent unless our
+/// window is in front, so Voice typing can only type into the note.
 #[tauri::command]
 async fn notes_dictate(app: AppHandle) -> Result<bool, String> {
     if let Some(window) = app.get_webview_window("main") {
@@ -344,9 +359,13 @@ async fn notes_dictate(app: AppHandle) -> Result<bool, String> {
     // Let the focus settle before the keys go out.
     std::thread::sleep(std::time::Duration::from_millis(120));
     #[cfg(target_os = "windows")]
-    let result = press_win_h().map(|()| true);
+    let result = if main_window_in_front(&app) {
+        press_win_h().map(|()| true)
+    } else {
+        Err("HL Desk is not the window in front, so dictation was not started.".into())
+    };
     #[cfg(target_os = "macos")]
-    let result = start_mac_dictation(&app);
+    let result = send_mac_dictation(&app, objc2::sel!(startDictation:));
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     let result: Result<bool, String> = Err("Dictation is not supported here.".into());
     match &result {
@@ -360,12 +379,42 @@ async fn notes_dictate(app: AppHandle) -> Result<bool, String> {
     result
 }
 
-/// Mic clicked again, Esc, or the note closed: the popover hides on blur again.
+/// Mic clicked again, Esc, the note closed or the 60 s ran out: the popover hides on blur again.
+/// end (the mic or Esc only): also ends the computer's dictation, but only one we started that
+/// may still be running, so a dictation the user already closed is not opened again.
+/// Async so it does not run on the main thread (macOS waits on it below).
 #[tauri::command]
-fn notes_dictation_stop() {
-    if DICTATING_UNTIL.swap(0, Ordering::SeqCst) != 0 {
-        crate::applog::info("notes: dictation stopped (popover hides on blur again)");
+async fn notes_dictation_stop(app: AppHandle, end: bool) {
+    let until = DICTATING_UNTIL.swap(0, Ordering::SeqCst);
+    if until == 0 {
+        return;
     }
+    crate::applog::info("notes: dictation stopped (popover hides on blur again)");
+    if !end || now_ms() >= until {
+        return;
+    }
+    // Windows: Win+H toggles Voice typing off. Only with our window in front, so the keys can
+    // never open it in another app.
+    #[cfg(target_os = "windows")]
+    {
+        if !main_window_in_front(&app) {
+            crate::applog::warn("notes: HL Desk not in front; Voice typing left as it is");
+        } else if let Err(e) = press_win_h() {
+            crate::applog::error(&format!("notes: could not stop Voice typing: {e}"));
+        } else {
+            crate::applog::info("notes: Voice typing ended (Win+H)");
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        match send_mac_dictation(&app, objc2::sel!(stopDictation:)) {
+            Ok(true) => crate::applog::info("notes: dictation ended (stopDictation:)"),
+            Ok(false) => crate::applog::warn("notes: stopDictation: was not handled"),
+            Err(e) => crate::applog::error(&format!("notes: could not stop dictation: {e}")),
+        }
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let _ = app;
 }
 
 /// This feature's commands. Name each one "notes_<name>" (for example "notes_list")

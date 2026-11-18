@@ -26,3 +26,4 @@
 }
 .notes-voice { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .notes-voice-settings { flex: none; }
+.notes-voice.warn { white-space: normal; color: var(--red); }
