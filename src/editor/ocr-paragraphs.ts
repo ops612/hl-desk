@@ -34,6 +34,7 @@ export function paragraphs(lines: OcrLine[]): string[] {
       prev !== null &&
       !ENDS_SENTENCE.test(text) &&
       !STARTS_ITEM.test(line.text) &&
+      line.y >= prev.y + prev.h * 0.5 && // a line on the same row (a column, a timestamp) stays apart
       line.y - (prev.y + prev.h) <= Math.max(prev.h, line.h) * 0.9 &&
       line.x >= left - Math.max(prev.h, line.h);
     if (joins) {
