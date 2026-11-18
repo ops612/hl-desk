@@ -10,7 +10,7 @@ import * as notes from "./features/notes";
 import * as screenshot from "./features/screenshot";
 import { mountPermission } from "./features/screenshot/permission";
 import { mountCaptureSettings } from "./features/screenshot/settings";
-import { startUpdater } from "./updater";
+import { openReleaseNotes, startUpdater } from "./updater";
 
 // Each feature owns its folder and exports mount(el). A tab mounts its feature the first time it is shown.
 const features: Record<string, { mount(el: HTMLElement): void }> = { clipboard, screenshot, notes };
@@ -148,43 +148,103 @@ const cmdKey = isMac ? "⌘" : "Ctrl";
 const shiftKey = isMac ? "⇧" : "Shift";
 const svg = (body: string) =>
   `<svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
-// Icons from Feather (MIT): sidebar, crop, clipboard.
-const welcomeItems: [string, string, string[], string][] = [
+// Icons from Feather (MIT): sidebar, crop, clipboard, globe, image, mic.
+const ICON_TRANSLATE = svg('<circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>');
+const ICON_IMAGE = svg('<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>');
+const ICON_MIC = svg('<path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v4M8 23h8"/>');
+const copyTwice = [cmdKey, "C", "C"];
+const captureKeys = [cmdKey, shiftKey, "2"];
+const dictateKeys = [cmdKey, shiftKey, "D"];
+// [title, hint, keys, icon, new?]
+type GuideRow = [string, string, string[], string, boolean?];
+const welcomeItems: GuideRow[] = [
   ["Open HL Desk", isMac ? "Or click HL in the menu bar" : "Or click HL in the tray",
     [cmdKey, shiftKey, "Space"], svg('<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/>')],
   ["Capture an area", "Drag over anything, then mark it up",
     [cmdKey, shiftKey, "2"], svg('<path d="M6.13 1L6 16a2 2 0 0 0 2 2h15"/><path d="M1 6.13L16 6a2 2 0 0 1 2 2v15"/>')],
   ["Clipboard keeps 1 day", "Copy as usual, then search it here",
     [cmdKey, "C"], svg('<path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/>')],
+  ["Translate", "Select text, copy twice. Screenshots: Translate button", copyTwice, ICON_TRANSLATE],
+  ["Voice to text", "Click the mic in a note and speak", dictateKeys, ICON_MIC],
 ];
+// "New in HL Desk" (What's new on the Updated line): rows per version. A later release adds an
+// entry; a version without one shows the newest entry.
+const whatsNew: Record<string, GuideRow[]> = {
+  "0.1.9": [
+    ["Translate text", "Select text in any app, copy twice", copyTwice, ICON_TRANSLATE, true],
+    ["Translate a screenshot", "Capture, then click Translate", captureKeys, ICON_IMAGE, true],
+    ["Voice to text", "Click the mic in a note and speak", dictateKeys, ICON_MIC],
+  ],
+};
 const keycaps = (keys: string[]) => keys.map((k) => `<kbd class="keycap">${k}</kbd>`).join("");
-document.getElementById("welcome-lead")!.textContent = isMac
-  ? "It lives in your menu bar. Everything stays on this Mac."
-  : "It lives in the tray, bottom right. Everything stays on this PC.";
-document.getElementById("welcome-list")!.innerHTML = welcomeItems
-  .map(([title, hint, keys, icon]) => `<li><span class="welcome-icon">${icon}</span>
-    <span class="welcome-text"><strong>${title}</strong><span class="hint">${hint}</span></span>
+const guideRows = (rows: GuideRow[]) =>
+  rows
+    .map(([title, hint, keys, icon, isNew]) => `<li><span class="welcome-icon">${icon}</span>
+    <span class="welcome-text"><strong>${title}${isNew ? ' <span class="badge-new">New</span>' : ""}</strong><span class="hint">${hint}</span></span>
     <span class="welcome-keys">${keycaps(keys)}</span></li>`)
-  .join("");
+    .join("");
+const welcomeTitle = document.getElementById("welcome-title")!;
+const welcomeLead = document.getElementById("welcome-lead")!;
+const welcomeList = document.getElementById("welcome-list")!;
+const welcomeNotes = document.getElementById("welcome-notes")!;
+const welcomeFoot = document.getElementById("welcome-foot")!;
+const welcomePermEl = document.getElementById("welcome-perm")!;
+const welcomeDone = document.getElementById("welcome-done") as HTMLButtonElement;
+const welcomeTry = document.getElementById("welcome-try") as HTMLButtonElement;
+/** null: the sheet shows the welcome; a version: it shows "New in HL Desk" for that version. */
+let whatsNewVersion: string | null = null;
 
 // Screen Recording is a macOS permission: the same card as on the Screenshot tab, gone once allowed.
-const welcomePerm = mountPermission(document.getElementById("welcome-perm")!);
+const welcomePerm = mountPermission(welcomePermEl);
 
 function showWelcome(): void {
+  whatsNewVersion = null;
+  welcomeTitle.textContent = "Welcome to HL Desk";
+  welcomeLead.textContent = isMac
+    ? "It lives in your menu bar. Everything stays on this Mac."
+    : "It lives in the tray, bottom right. Everything stays on this PC.";
+  welcomeList.innerHTML = guideRows(welcomeItems);
+  welcomeNotes.hidden = true;
+  welcomeFoot.textContent = "Show it again in Settings";
+  welcomeDone.className = "btn";
+  welcomeTry.hidden = false;
+  closeSheet(false);
   welcome.hidden = false;
   if (isMac) welcomePerm.check();
-  document.getElementById("welcome-try")!.focus();
+  welcomeTry.focus();
+}
+
+/** "New in HL Desk": only from What's new on the Updated line; welcomeSeen is left alone. */
+function showWhatsNew(version: string): void {
+  whatsNewVersion = version;
+  const latest = Object.keys(whatsNew).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).pop()!;
+  welcomeTitle.textContent = "New in HL Desk";
+  welcomeLead.textContent = `Updated to ${version}. Here is what you can do now.`;
+  welcomeList.innerHTML = guideRows(whatsNew[version] ?? whatsNew[latest]);
+  welcomeNotes.hidden = false;
+  welcomeFoot.textContent = "All tips: Settings, Show welcome again";
+  welcomeDone.className = "btn-primary";
+  welcomeTry.hidden = true;
+  welcomePermEl.hidden = true;
+  closeSheet(false);
+  welcome.hidden = false;
+  welcomeDone.focus();
 }
 
 function closeWelcome(): void {
   welcome.hidden = true;
-  invoke("settings_set_welcome_seen", { seen: true }).catch(() => {});
+  if (whatsNewVersion === null) invoke("settings_set_welcome_seen", { seen: true }).catch(() => {});
 }
 
-document.getElementById("welcome-done")!.addEventListener("click", () => {
+welcomeDone.addEventListener("click", () => {
   closeWelcome();
   show(localTab() ?? order[0]);
 });
+document.getElementById("welcome-release-notes")!.addEventListener("click", () => {
+  if (whatsNewVersion) openReleaseNotes(whatsNewVersion);
+});
+// Guide: the full welcome list, any time. Opening it does not change welcomeSeen.
+document.getElementById("guide-open")!.addEventListener("click", showWelcome);
 document.getElementById("welcome-try")!.addEventListener("click", () => {
   closeWelcome();
   show("screenshot");
@@ -250,7 +310,7 @@ void loadSettings().then((s) => {
   if (s && !s.welcomeSeen) showWelcome();
 });
 // Update check 10 s after start and every 6 hours (src/updater.ts).
-startUpdater();
+startUpdater(showWhatsNew);
 
 // A failed capture shows this window (Rust) with the error on the Screenshot tab; so does a
 // capture stopped for the macOS Screen Recording permission (the tab shows the permission card).

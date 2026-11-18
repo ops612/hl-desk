@@ -227,6 +227,13 @@ label.setting { cursor: pointer; }
 .welcome-text strong { display: block; font-weight: 500; }
 .welcome-text .hint { margin: 1px 0 0; }
 .welcome-keys { flex: none; white-space: nowrap; }
+/* "New" on a row of New in HL Desk. */
+.badge-new {
+  display: inline-block; margin-left: 4px; padding: 0 5px; border-radius: 4px; background: var(--indigo-tint);
+  color: var(--indigo); font-size: 10px; font-weight: 500; line-height: 16px; vertical-align: 1px;
+}
+.welcome-notes { margin: 8px 0 0; text-align: center; }
+.welcome-notes .link-btn { font-size: 11px; }
 /* The Screen Recording card (src/features/screenshot/permission.css draws it). */
 .welcome-perm { margin-top: 10px; }
 .welcome-actions { display: flex; gap: 6px; }
