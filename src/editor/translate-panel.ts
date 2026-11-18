@@ -23,9 +23,10 @@ import {
   touchIdle,
   translateTexts,
 } from "../translate/engine";
+import { paragraphs, type OcrLine } from "./ocr-paragraphs";
 
 interface OcrText {
-  lines: { text: string; x: number; y: number; w: number; h: number }[];
+  lines: OcrLine[];
   language: string;
 }
 
@@ -107,8 +108,8 @@ export function setupTranslatePanel(captureId: number, onLayout: () => void): vo
     try {
       const out = await invoke<OcrText>("ocr_capture", { id: captureId });
       if (mine !== token) return;
-      lines = out.lines.map((l) => l.text.trim()).filter(Boolean);
-      log("info", `editor: OCR found ${lines.length} lines (${out.language})`);
+      lines = paragraphs(out.lines);
+      log("info", `editor: OCR found ${out.lines.length} lines, ${lines.length} paragraphs (${out.language})`);
     } catch (e) {
       if (mine !== token) return;
       // The error is a sentence for the user; one kind starts with "ocr-no-chinese:".

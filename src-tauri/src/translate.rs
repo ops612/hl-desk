@@ -134,7 +134,7 @@ fn other_copy(app: &AppHandle) {
 fn single_copy(app: &AppHandle) {
     let shown = app
         .get_webview_window(CARD_LABEL)
-        .is_some_and(|w| w.is_visible().unwrap_or(false));
+        .is_some_and(|w| card_visible(&w));
     if shown {
         let _ = app.emit_to(CARD_LABEL, COPIED_EVENT, ());
     }
@@ -936,8 +936,39 @@ fn translate_card_show(window: WebviewWindow, height: f64) {
 #[tauri::command]
 fn translate_card_hide(window: WebviewWindow) {
     *lock(&SESSION) = None;
+    // The card is shown with a raw SetWindowPos (Windows) / orderFrontRegardless (macOS), which
+    // Tauri does not track, so its own hide() can be a no-op: hide with the matching OS call too.
+    #[cfg(windows)]
+    if let Ok(handle) = window.hwnd() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
+        // SAFETY: plain Win32 call on this window's handle.
+        unsafe { ShowWindow(handle.0 as _, SW_HIDE) };
+    }
+    #[cfg(target_os = "macos")]
+    if let Ok(ptr) = window.ns_window() {
+        // SAFETY: Tauri's NSWindow pointer for this window; sync commands run on the main thread.
+        unsafe {
+            let ns_window: &objc2_app_kit::NSWindow = &*(ptr as *const objc2_app_kit::NSWindow);
+            ns_window.orderOut(None);
+        }
+    }
     let _ = window.hide();
-    applog::info("translate: card hidden");
+    applog::info(&format!("translate: card hidden (still visible: {})", card_visible(&window)));
+}
+
+/// Whether the card is on screen. Windows asks the OS (the card is shown with a raw SetWindowPos,
+/// which Tauri's is_visible may not see); elsewhere Tauri's answer.
+fn card_visible(window: &WebviewWindow) -> bool {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::IsWindowVisible;
+        // SAFETY: plain Win32 call on this window's handle.
+        window.hwnd().is_ok_and(|h| unsafe { IsWindowVisible(h.0 as _) } != 0)
+    }
+    #[cfg(not(windows))]
+    {
+        window.is_visible().unwrap_or(false)
+    }
 }
 
 /// Copy: put the translation on the clipboard. The double-copy detector ignores it.
