@@ -2,6 +2,7 @@ mod applog;
 mod clipboard;
 mod db;
 mod notes;
+mod ocr;
 mod screenshot;
 mod settings;
 mod translate;
@@ -194,6 +195,7 @@ pub fn run() {
     let clipboard_commands = clipboard::commands();
     let screenshot_commands = screenshot::commands();
     let notes_commands = notes::commands();
+    let ocr_commands = ocr::commands();
     let settings_commands = settings::commands();
     let translate_commands = translate::commands();
     let app_commands = applog::commands();
@@ -246,6 +248,8 @@ pub fn run() {
                 screenshot_commands(invoke)
             } else if command.starts_with("notes_") {
                 notes_commands(invoke)
+            } else if command.starts_with("ocr_") {
+                ocr_commands(invoke)
             } else if command.starts_with("settings_") {
                 settings_commands(invoke)
             } else if command.starts_with("translate_") {

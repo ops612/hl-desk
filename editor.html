@@ -21,11 +21,55 @@
         <button id="undo" class="plain" title="Undo">↶ Undo</button>
         <button id="redo" class="plain" title="Redo">↷ Redo</button>
       </div>
+      <button id="translate" class="tool tr-tool" type="button" aria-pressed="false" aria-controls="tr-panel"
+        title="Translate the text in this screenshot">
+        <!-- Language icon (two glyphs), drawn for HL Desk. -->
+        <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor"
+          stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M1.5 3h7M5 1.5V3M7 3c-.5 3-2.5 5.5-5 6.5M3.5 5.5c.8 1.6 2.2 2.9 4 3.6" />
+          <path d="M8.5 14.5l3-7 3 7M9.6 12h3.8" />
+        </svg>
+        Translate
+      </button>
       <button id="apply-crop" class="plain apply" hidden>Apply crop ↵</button>
     </header>
-    <div class="stage" id="stage">
-      <canvas id="canvas"></canvas>
-      <span class="pick-tag" id="pick-tag" hidden>Delete to remove</span>
+    <div class="work">
+      <div class="stage" id="stage">
+        <canvas id="canvas"></canvas>
+        <span class="pick-tag" id="pick-tag" hidden>Delete to remove</span>
+      </div>
+      <!-- Translate panel (src/editor/translate-panel.ts): the screenshot's text, line by line. -->
+      <aside class="tr-panel" id="tr-panel" aria-label="Translation" hidden>
+        <div class="tr-panel-head">
+          <div class="tr-picker">
+            <button class="btn tr-lang" id="tr-lang" type="button" aria-haspopup="menu" aria-expanded="false"
+              aria-controls="tr-menu"><span id="tr-lang-label">Language</span>
+              <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 3.5l3 3 3-3" fill="none"
+                stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" /></svg>
+            </button>
+            <div class="tr-menu tr-menu-down" id="tr-menu" role="menu" hidden></div>
+          </div>
+          <button class="icon-btn" id="tr-close" type="button" aria-label="Close translation" title="Close">
+            <svg width="12" height="12" viewBox="0 0 14 14" aria-hidden="true" fill="none" stroke="currentColor"
+              stroke-width="1.5" stroke-linecap="round"><path d="M3 3l8 8M11 3l-8 8" /></svg>
+          </button>
+        </div>
+        <div class="tr-panel-body">
+          <p class="tr-panel-state" id="tr-state" role="status"></p>
+          <section class="tr-get" id="tr-get" hidden>
+            <h2 class="tr-get-title" id="tr-get-title"></h2>
+            <p class="tr-get-text" id="tr-get-text"></p>
+            <div class="tr-progress" id="tr-progress" hidden><div class="tr-progress-bar" id="tr-progress-bar"></div></div>
+            <p class="tr-get-status hint" id="tr-get-status" hidden></p>
+            <button class="btn tr-get-btn" id="tr-download" type="button">Download</button>
+          </section>
+          <p class="tr-error" id="tr-error" role="alert" hidden></p>
+          <ol class="tr-lines" id="tr-lines"></ol>
+        </div>
+        <div class="tr-panel-foot">
+          <button class="btn-primary" id="tr-copy" type="button" disabled>Copy translation</button>
+        </div>
+      </aside>
     </div>
     <div class="actions">
       <div class="drag" id="drag" role="button" tabindex="-1" title="Drag into any app to share">

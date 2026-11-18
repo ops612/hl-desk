@@ -19,7 +19,8 @@ https://mozilla.org/MPL/2.0/.
   https://hg-edge.mozilla.org/mozilla-central/file/tip/toolkit/components/translations/content/
 - **Language models** (downloaded on first use, not bundled): Firefox Remote Settings collection
   `translations-models`, Chinese (Traditional) to English, Chinese (Simplified) to English and
-  English to Chinese (Traditional), version 2.0. Files, sizes and sha256 are pinned in
+  English to Chinese (Traditional), version 2.0, served unmodified from the HL Desk releases
+  mirror (release `models-v1`). Files, sizes and sha256 are pinned in
   `src-tauri/src/translate.rs` (`MODELS`). Training code and model sources:
   https://github.com/mozilla/translations and https://github.com/mozilla/firefox-translations-models
 

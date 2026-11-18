@@ -23,7 +23,8 @@
 //!
 //! Models: downloaded on first use of a pair into <app data>/models/<pair>/ (temp file `.part`,
 //! resumed with a Range request, sha256 checked against MODELS, then renamed). Download URLs come
-//! from MODEL_BASE_URL plus each file's path, so the host can be swapped in one place.
+//! from MODEL_BASE_URL (our mirror of Mozilla's files) via `model_url`, so the host can be
+//! swapped in one place.
 //! Every step is logged (sizes and counts only, never the copied text).
 
 use std::{
@@ -297,9 +298,15 @@ pub fn choose_pair(script: Script, settled: Option<Pair>, pick: Option<&str>) ->
 
 // ---------- model manifest ----------
 
-/// Where model files are downloaded from: this base plus each file's `path`. Mozilla's Remote
-/// Settings CDN for now (the files Firefox Translations uses); swap the host here.
-pub const MODEL_BASE_URL: &str = "https://firefox-settings-attachments.cdn.mozilla.net/";
+/// Where model files are downloaded from: our mirror, release "models-v1" on the public releases
+/// repo, byte-identical to Mozilla's Remote Settings files. Each file is `<pair>.<name>` under
+/// this base (`model_url`); swap the host here.
+pub const MODEL_BASE_URL: &str = "https://github.com/ops612/hl-desk-releases/releases/download/models-v1/";
+
+/// The download URL of one model file of `pair`.
+pub fn model_url(pair: Pair, file: &ModelFile) -> String {
+    format!("{MODEL_BASE_URL}{}.{}", pair.id(), file.name)
+}
 
 pub struct ModelFile {
     /// Bergamot file type: model, lex, vocab, srcvocab, trgvocab.
@@ -307,8 +314,6 @@ pub struct ModelFile {
     pub name: &'static str,
     pub size: u64,
     pub sha256: &'static str,
-    /// Path under MODEL_BASE_URL.
-    pub path: &'static str,
 }
 
 pub struct PairModels {
@@ -325,7 +330,8 @@ impl PairModels {
 }
 
 /// Pinned models: Mozilla Remote Settings "translations-models", newest desktop release records
-/// (read 2026-11-18 with the spike's fetch-models.mjs logic). Licence MPL-2.0.
+/// (read 2026-11-18 with the spike's fetch-models.mjs logic), mirrored at MODEL_BASE_URL.
+/// Licence MPL-2.0.
 pub const MODELS: [PairModels; 3] = [
     PairModels {
         pair: Pair::ZhHantEn,
@@ -336,28 +342,24 @@ pub const MODELS: [PairModels; 3] = [
                 name: "model.zhen.intgemm.alphas.bin",
                 size: 43_849_787,
                 sha256: "0aee91790894458f5d367551f6edcd4c9cb97852c34f221bcbf9f4701ebcf0cd",
-                path: "main-workspace/translations-models/20260522194230--6ca6db97-6bce-4110-981f-350e15965675--8323efd2-43e9-4886-9f60-35870d1744ea.bin",
             },
             ModelFile {
                 kind: "lex",
                 name: "lex.50.50.zhen.s2t.bin",
                 size: 6_385_944,
                 sha256: "aa7daf6cfc85c0cd2c10e2944d66f6da55497c9c6408789f3adfded4074c2fb1",
-                path: "main-workspace/translations-models/20260522194215--6c386193-432a-422f-be5f-3cad0977e52b--a52e4a54-5f80-43ce-b873-1bc792ec1483.bin",
             },
             ModelFile {
                 kind: "srcvocab",
                 name: "srcvocab.zhen.spm",
                 size: 769_669,
                 sha256: "5cc6a76611dbf86219f109141533606b15ecb34eee83673bb86b2c16b14734db",
-                path: "main-workspace/translations-models/20260522194213--ad6a9ed2-06ed-4c72-b6ba-aa4492bd582f--72fab356-41da-4bd6-a22c-aa5456ba3ea1.spm",
             },
             ModelFile {
                 kind: "trgvocab",
                 name: "trgvocab.zhen.spm",
                 size: 812_572,
                 sha256: "7bf002db37c10d3b114cc5588d7fdcb16c57d0fd1e2c34354c22cc9f0b6c3c29",
-                path: "main-workspace/translations-models/20260522194217--5e1d7df1-80a8-4142-ae9d-0ff51b8c2fbc--5e39a274-9805-4d87-a950-39b3d95aac93.spm",
             },
         ],
     },
@@ -370,21 +372,18 @@ pub const MODELS: [PairModels; 3] = [
                 name: "model.zhen.intgemm.alphas.bin",
                 size: 59_504_955,
                 sha256: "3535442962ec8f4a553cc19b206befcac689ee9cddaea44fa91e21527fc30ac2",
-                path: "main-workspace/translations-models/052699bf-6f88-4c74-bb14-e49a943b4f59.bin",
             },
             ModelFile {
                 kind: "lex",
                 name: "lex.50.50.zhen.s2t.bin",
                 size: 9_220_016,
                 sha256: "cdcad3592dc2bc4676c34c4d37203f7649ee989195cf083cbb60f1ea011f976b",
-                path: "main-workspace/translations-models/645c720c-6920-470d-9bb7-3f9a6b0a9cae.bin",
             },
             ModelFile {
                 kind: "vocab",
                 name: "vocab.zhen.spm",
                 size: 1_359_697,
                 sha256: "dff594318ab7d8b7b60b844ab98ebe6b932ae8045fab15235404c787715965b3",
-                path: "main-workspace/translations-models/88a4925d-ff4a-4c76-8813-95e2ac600b14.spm",
             },
         ],
     },
@@ -397,28 +396,24 @@ pub const MODELS: [PairModels; 3] = [
                 name: "model.enzh.intgemm.alphas.bin",
                 size: 43_849_787,
                 sha256: "559ab90d723a58c1f1e2ab7cc12137bc667af5ba3e325e3eb30b5cdc930db520",
-                path: "main-workspace/translations-models/20260522194155--76d2a34e-7ef2-4829-ac1a-a1319b852dc5--72be7771-db83-4218-bec5-44f021cbf00b.bin",
             },
             ModelFile {
                 kind: "lex",
                 name: "lex.50.50.enzh.s2t.bin",
                 size: 4_057_188,
                 sha256: "d891404d1436a7334df12539fe30a26f9e9f2b80bd42fdb8b5f8849e8a1e942b",
-                path: "main-workspace/translations-models/20260522194159--13a8d548-8d6a-46f6-ab8d-ea19098b7fe8--6cf4bdcb-dbe5-4e2d-af40-a02b440fdcc9.bin",
             },
             ModelFile {
                 kind: "srcvocab",
                 name: "srcvocab.enzh.spm",
                 size: 803_694,
                 sha256: "2266df70492162a249ab1c0154f929bd6098b246544c666c1a0d5a24dde7d2ea",
-                path: "main-workspace/translations-models/20260522194144--b93467f8-2c0b-43f4-a662-19cae5c7f899--ae44a945-6ed0-44d2-88ac-d4b9c25f6c3a.spm",
             },
             ModelFile {
                 kind: "trgvocab",
                 name: "trgvocab.enzh.spm",
                 size: 751_671,
                 sha256: "22b91a4436d70b91ab8777c677252ab5fae2bc284d71f977df5206c110e3444c",
-                path: "main-workspace/translations-models/20260522194157--52f509a0-ac8b-48bf-ba9f-0c61a064a00a--85418cc0-208e-440b-ac6f-c56d242ca430.spm",
             },
         ],
     },
@@ -512,6 +507,7 @@ fn http_client() -> Result<reqwest::Client, String> {
 async fn download_file(
     client: &reqwest::Client,
     dir: &Path,
+    pair: Pair,
     file: &ModelFile,
     report: &(dyn Fn(u64) + Sync),
 ) -> Result<(), String> {
@@ -523,7 +519,8 @@ async fn download_file(
         have = 0;
     }
     if have < file.size {
-        let url = format!("{MODEL_BASE_URL}{}", file.path);
+        // GitHub answers with a redirect to its file host; reqwest follows it and keeps Range.
+        let url = model_url(pair, file);
         let mut request = client.get(&url);
         if have > 0 {
             request = request.header(reqwest::header::RANGE, format!("bytes={have}-"));
@@ -598,7 +595,7 @@ async fn download_pair(app: &AppHandle, pair: Pair, progress: &Channel<Progress>
         let report = |bytes: u64| {
             let _ = progress.send(Progress { done: before + bytes, total });
         };
-        download_file(&client, &dir, file, &report).await?;
+        download_file(&client, &dir, pair, file, &report).await?;
         done += file.size;
     }
     let _ = progress.send(Progress { done: total, total });
@@ -1271,13 +1268,21 @@ mod tests {
                 assert_eq!(f.sha256.len(), 64, "{}", f.name);
                 assert!(f.sha256.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
                 assert!(f.size > 0);
-                assert!(f.path.starts_with("main-workspace/translations-models/"));
                 assert!(!f.name.contains(['/', '\\']));
             }
             // About 50 to 70 MB per pair.
             assert!((40_000_000..80_000_000).contains(&m.total_size()), "{}", p.id());
         }
         assert!(MODEL_BASE_URL.starts_with("https://") && MODEL_BASE_URL.ends_with('/'));
+    }
+
+    #[test]
+    fn model_url_on_the_mirror() {
+        let model = models_for(Pair::ZhHantEn).files.iter().find(|f| f.kind == "model").unwrap();
+        assert_eq!(
+            model_url(Pair::ZhHantEn, model),
+            "https://github.com/ops612/hl-desk-releases/releases/download/models-v1/zh-Hant-en.model.zhen.intgemm.alphas.bin"
+        );
     }
 
     #[test]

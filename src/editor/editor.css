@@ -25,8 +25,10 @@ button { cursor: pointer; }
 }
 .primary:hover { background: var(--indigo-hover); }
 
+/* Stage and, when open, the Translate panel side by side. */
+.work { flex: 1; min-height: 0; display: flex; }
 .stage {
-  position: relative; flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center;
+  position: relative; flex: 1; min-height: 0; min-width: 0; display: flex; align-items: center; justify-content: center;
   background: var(--bg); overflow: hidden; padding: 12px;
 }
 canvas { display: block; box-shadow: 0 1px 4px rgb(11 18 32 / 15%); }
@@ -64,3 +66,30 @@ canvas { display: block; box-shadow: 0 1px 4px rgb(11 18 32 / 15%); }
   padding: 5px 12px; border-top: 1px solid var(--border); background: var(--bg);
   color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden;
 }
+
+/* Translate button and panel (src/editor/translate-panel.ts; shared .tr-* classes from
+   src/translate/translate.css). The button is a .tool, selected while the panel is open. */
+.tr-tool { display: inline-flex; align-items: center; gap: 6px; }
+.tr-panel {
+  flex: none; width: 250px; display: flex; flex-direction: column; min-height: 0;
+  border-left: 1px solid var(--border); background: var(--surface);
+}
+.tr-panel-head { display: flex; align-items: center; gap: 4px; padding: 8px 6px 8px var(--inset); }
+.tr-panel-head .tr-picker { flex: 1; }
+.tr-panel-head .tr-lang { width: 100%; justify-content: space-between; }
+.tr-menu-down { top: calc(100% + 4px); bottom: auto; }
+.tr-panel-body {
+  flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px;
+  padding: 0 var(--inset) var(--inset); user-select: text; -webkit-user-select: text;
+}
+.tr-panel-state { margin: 8px 0; color: var(--muted); font-size: 12px; }
+.tr-panel-state:empty { display: none; }
+.tr-get-btn { margin-top: 10px; height: 26px; padding: 0 10px; border-radius: var(--radius-sm); font-size: 11px; }
+.tr-lines { margin: 0; padding: 0; list-style: none; }
+.tr-lines li { padding: 6px 0; border-bottom: 1px solid var(--border); }
+.tr-lines li:last-child { border-bottom: 0; }
+.tr-line-source, .tr-line-result { margin: 0; overflow-wrap: anywhere; }
+.tr-line-source { color: var(--muted); font-size: 12px; line-height: 17px; }
+.tr-line-result { margin-top: 2px; font-size: 13px; line-height: 18px; }
+.tr-panel-foot { flex: none; padding: 8px var(--inset); border-top: 1px solid var(--border); }
+.tr-panel-foot .btn-primary { width: 100%; }
