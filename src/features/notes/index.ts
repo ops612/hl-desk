@@ -44,8 +44,8 @@ const DICTATION_MS = 60_000;
 /** No text this long after a start: dictation most likely did not start. */
 const DICTATION_QUIET_MS = 10_000;
 const DICTATION_TROUBLE = isMac
-  ? "Dictation didn't start. Check System Settings > Keyboard > Dictation."
-  : "Dictation didn't start. Check Settings > Privacy > Speech > Online speech recognition.";
+  ? "No dictation text yet. If it didn't start, check System Settings > Keyboard > Dictation."
+  : "No dictation text yet. If it didn't start, check Settings > Privacy > Speech > Online speech recognition.";
 const DICTATION_SETTINGS_URL = "x-apple.systempreferences:com.apple.Keyboard-Settings.extension";
 
 function log(level: "info" | "warn" | "error", message: string): void {
