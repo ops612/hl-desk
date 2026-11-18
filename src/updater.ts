@@ -250,6 +250,17 @@ function later(): void {
   else render();
 }
 
+/** Opens the GitHub release page of a version (the "Release notes" link on New in HL Desk). */
+export function openReleaseNotes(version: string): void {
+  log("info", `release notes ${version}`);
+  invoke("shell_open_url", { url: `${RELEASE_URL}${version}` }).catch((e) =>
+    log("error", `open release notes: ${errorText(e)}`),
+  );
+}
+
+/** Shows "New in HL Desk" (src/main.ts), set by startUpdater. */
+let onWhatsNew: (version: string) => void = openReleaseNotes;
+
 /** "Updated to <version> ✓ · What's new": once, on the first start of a new version. */
 function showUpdated(version: string): void {
   updatedLine.innerHTML = `<span class="update-title"></span>
@@ -261,9 +272,7 @@ function showUpdated(version: string): void {
   updatedLine.querySelector(".update-title")!.textContent = `Updated to ${version} ✓`;
   updatedLine.querySelector(".updated-whats-new")!.addEventListener("click", () => {
     log("info", `what's new ${version}`);
-    invoke("shell_open_url", { url: `${RELEASE_URL}${version}` }).catch((e) =>
-      log("error", `open release notes: ${errorText(e)}`),
-    );
+    onWhatsNew(version);
   });
   updatedLine.querySelector(".updated-close")!.addEventListener("click", () => {
     updatedLine.hidden = true;
@@ -289,7 +298,8 @@ async function checkUpdated(version: string): Promise<void> {
   invoke("shell_show_main").catch(() => {});
 }
 
-export function startUpdater(): void {
+export function startUpdater(whatsNew: (version: string) => void): void {
+  onWhatsNew = whatsNew;
   for (const bar of bars) {
     bar.innerHTML = `<p class="update-title"></p>
       <ul class="update-notes"></ul>

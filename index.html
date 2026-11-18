@@ -10,6 +10,15 @@
     <header class="app-header" data-tauri-drag-region>
       <span class="wordmark" data-tauri-drag-region>HL DESK</span>
       <span class="header-actions">
+        <button class="icon-btn" id="guide-open" type="button" aria-label="Guide" title="Guide">
+          <!-- Help-circle icon from Feather (MIT). -->
+          <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor"
+            stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10" />
+            <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+            <path d="M12 17h.01" />
+          </svg>
+        </button>
         <button class="icon-btn pin-btn" id="pin" type="button" aria-label="Keep HL Desk open"
           title="Keep HL Desk open" aria-pressed="false">
           <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
@@ -84,7 +93,8 @@
       </div>
     </div>
 
-    <!-- First-run welcome (shown until "Got it" or "Try a capture"; again from Settings). -->
+    <!-- First-run welcome (shown until "Got it" or "Try a capture"; again from Settings or the Guide button).
+         The same sheet shows "New in HL Desk" from the Updated line's What's new (src/main.ts). -->
     <div class="welcome" id="welcome" role="dialog" aria-modal="true" aria-labelledby="welcome-title" hidden>
       <div class="welcome-body"><div class="welcome-inner">
         <!-- The tray icon's mark (scripts/make-tray-icons.mjs draws the same shapes). -->
@@ -95,11 +105,14 @@
         <h2 id="welcome-title">Welcome to HL Desk</h2>
         <p class="hint welcome-lead" id="welcome-lead"></p>
         <ul class="welcome-list" id="welcome-list"></ul>
+        <p class="welcome-notes" id="welcome-notes" hidden>
+          <button class="link-btn" id="welcome-release-notes" type="button">Release notes</button>
+        </p>
         <!-- macOS Screen Recording card (src/features/screenshot/permission.ts). -->
         <div class="welcome-perm" id="welcome-perm" hidden></div>
       </div></div>
       <div class="footer">
-        <span>Show it again in Settings</span>
+        <span id="welcome-foot">Show it again in Settings</span>
         <span class="welcome-actions">
           <button class="btn" id="welcome-done" type="button">Got it</button>
           <button class="btn-primary" id="welcome-try" type="button">Try a capture</button>

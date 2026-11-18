@@ -81,6 +81,8 @@ export function mount(el: HTMLElement): void {
       <div class="toolbar">
         <input class="field" type="search" placeholder="Search notes" aria-label="Search notes"
           aria-controls="notes-rows" autocomplete="off" spellcheck="false" data-autofocus />
+        <button class="icon-btn notes-list-mic" type="button" aria-label="New note by voice"
+          title="New note by voice">${ICON_MIC}</button>
         <button class="btn-primary notes-add" type="button" aria-label="New note"
           title="New note (${isMac ? "⌘" : "Ctrl+"}N)">+</button>
       </div>
@@ -94,8 +96,9 @@ export function mount(el: HTMLElement): void {
       <div class="toolbar">
         <button class="icon-btn notes-back" type="button" aria-label="Back to notes" title="Back to notes">${ICON_BACK}</button>
         <span class="hint notes-status" role="status"></span>
-        <button class="icon-btn notes-mic" type="button" aria-pressed="false" aria-label="Dictate"
-          title="Dictate (${dictateKeys})">${ICON_MIC}</button>
+        <button class="notes-mic" type="button" aria-pressed="false"
+          title="Dictate (${dictateKeys})">${ICON_MIC}<span class="notes-mic-label">Dictate</span></button>
+        <span class="notes-divider" aria-hidden="true"></span>
         <button class="icon-btn notes-trash" type="button" aria-label="Delete note" title="Delete note">${ICON_TRASH}</button>
       </div>
       <textarea class="field notes-body" aria-label="Note"
@@ -383,6 +386,9 @@ export function mount(el: HTMLElement): void {
   // is clicked again or Esc), the popover does not hide when it loses the focus.
 
   const mic = $<HTMLButtonElement>(".notes-mic");
+  const micLabel = $(".notes-mic-label");
+  const micDivider = $(".notes-divider");
+  const listMic = $<HTMLButtonElement>(".notes-list-mic");
   const voiceHint = $(".notes-voice");
   const voiceSettings = $<HTMLButtonElement>(".notes-voice-settings");
   /** null until notes_dictation_status answers. */
@@ -400,8 +406,11 @@ export function mount(el: HTMLElement): void {
     voiceHint.hidden = !editor;
     voiceHint.classList.toggle("warn", voiceTrouble);
     mic.hidden = voice !== null && !voice.available;
+    micDivider.hidden = mic.hidden;
+    listMic.hidden = mic.hidden;
     mic.setAttribute("aria-pressed", String(dictating));
     mic.classList.toggle("active", dictating);
+    micLabel.textContent = dictating ? "Stop" : "Dictate";
     mic.title = dictating ? "Stop dictation (Esc)" : `Dictate (${dictateKeys})`;
     const off = voice?.off === true && isMac;
     voiceSettings.hidden = !editor || !off;
@@ -485,6 +494,11 @@ export function mount(el: HTMLElement): void {
   // Keep the textarea's focus and cursor when the mic is clicked.
   mic.addEventListener("mousedown", (e) => e.preventDefault());
   mic.addEventListener("click", toggleDictation);
+  // List: a new note, then dictation through the same path as the editor mic.
+  listMic.addEventListener("click", () => {
+    log("info", "new note by voice");
+    void newNote().then(startDictation);
+  });
   voiceSettings.addEventListener("click", () => {
     log("info", "open Keyboard settings (Turn on Dictation)");
     invoke("shell_open_url", { url: DICTATION_SETTINGS_URL }).catch((e) => log("error", `open settings: ${e}`));

@@ -13,10 +13,19 @@
 .notes-editor-view .toolbar { padding-bottom: 8px; }
 .notes-status { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .field.notes-body { flex: 1; min-height: 0; width: auto; margin: 0 var(--inset) var(--inset); line-height: 1.5; }
-/* Mic (dictation): round; while listening it turns indigo with a soft pulse (not filled, so the
-   view keeps one primary button). */
-.icon-btn.notes-mic { border: 1px solid var(--border); border-radius: 50%; }
-.icon-btn.notes-mic.active {
+/* Mic (dictation): "Dictate" with the mic icon, as tall as the icon buttons; while listening it
+   turns indigo with a soft pulse and reads "Stop" (not filled, so the view keeps one primary button). */
+.notes-mic {
+  display: inline-flex; flex: none; align-items: center; gap: 5px; height: 28px; padding: 0 10px;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface);
+  color: var(--muted); font-size: 12px; cursor: pointer;
+}
+.notes-mic:hover { background: var(--bg); color: var(--ink); }
+/* A 1px line between Dictate and Delete, so they are not side by side. */
+.notes-divider { flex: none; width: 1px; height: 18px; background: var(--border); }
+/* List: round mic left of +, starts a new note by voice. */
+.icon-btn.notes-list-mic { width: 30px; height: 30px; border: 1px solid var(--border); border-radius: 50%; }
+.notes-mic.active {
   border-color: var(--indigo); background: var(--indigo-tint); color: var(--indigo);
   animation: notes-mic-pulse 1.6s ease-out infinite;
 }
