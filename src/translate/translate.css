@@ -1,0 +1,55 @@
+/* Translate card (translate.html). Tokens, font and shared classes (.btn, .btn-primary, .icon-btn,
+   .footer, .hint) come from src/styles.css. The content sets the height: main.ts measures #card
+   and Rust sizes the window to it, so everything sits at the top and nothing is anchored to the
+   bottom. The page draws its own 1px border (the Windows window has no frame or shadow). */
+body.tr-page {
+  border: 1px solid var(--border); justify-content: flex-start;
+  user-select: none; -webkit-user-select: none; cursor: default;
+}
+.tr-card { display: flex; flex: none; flex-direction: column; }
+.tr-head {
+  display: flex; flex: none; align-items: center; justify-content: space-between;
+  padding: 6px 6px 2px var(--inset);
+}
+.tr-title { font-size: 11px; font-weight: 500; letter-spacing: 2px; }
+.tr-head-actions { display: flex; gap: 2px; }
+
+.tr-content { display: flex; flex-direction: column; gap: 6px; padding: 4px var(--inset) 10px; }
+.tr-source {
+  margin: 0; max-height: 70px; overflow-y: auto; font-size: 12px; line-height: 17px; color: var(--muted);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.tr-result {
+  margin: 0; max-height: 220px; overflow-y: auto; font-size: 14px; line-height: 20px;
+  white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; cursor: text;
+}
+.tr-result.pending { color: var(--muted); }
+.tr-result:empty { display: none; }
+
+/* First use of a pair: "Get Chinese -> English", what it is, then the progress bar. */
+.tr-get { padding: 10px 12px; border-radius: var(--radius); background: var(--indigo-tint); }
+.tr-get-title { margin: 0; font-size: 13px; font-weight: 600; }
+.tr-get-text { margin: 2px 0 0; font-size: 12px; line-height: 17px; }
+.tr-progress { height: 6px; margin-top: 10px; border-radius: 3px; background: var(--surface); overflow: hidden; }
+.tr-progress-bar { width: 0; height: 100%; border-radius: 3px; background: var(--indigo); transition: width 0.2s; }
+.tr-get-status { margin: 6px 0 0; }
+
+.tr-error { margin: 0; font-size: 12px; line-height: 17px; color: var(--red); }
+
+.tr-actions {
+  display: flex; flex: none; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 0 var(--inset) 10px;
+}
+.tr-picker { position: relative; min-width: 0; }
+.tr-lang { max-width: 100%; height: 30px; padding: 0 10px; font-size: 12px; }
+.tr-lang span { overflow: hidden; text-overflow: ellipsis; }
+.tr-lang svg { flex: none; color: var(--muted); }
+/* Opens upwards over the text, so the card never has to grow for it. */
+.tr-menu {
+  position: absolute; left: 0; bottom: calc(100% + 4px); z-index: 5; min-width: 240px; padding: 4px;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface);
+  box-shadow: 0 4px 12px rgb(11 18 32 / 12%);
+}
+.tr-menu .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; white-space: nowrap; }
+.tr-menu .row[aria-checked="true"] { color: var(--indigo); font-weight: 500; }
+.tr-footer { margin-top: 0; }

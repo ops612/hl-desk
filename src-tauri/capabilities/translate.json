@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "translate",
+  "description": "The translate card window (label translate, created in translate.rs). core:default lets it listen for translate://open and receive download progress on a channel; its own commands (translate_*, app_log) are app commands, not ACL-checked while the app defines no app manifest (build.rs).",
+  "windows": ["translate"],
+  "permissions": ["core:default"]
+}

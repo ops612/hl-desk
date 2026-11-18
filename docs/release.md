@@ -64,4 +64,8 @@ clicks "Restart to update" to install it. Windows installs with the same `HL-Des
 6. Check the three links above return the new files (`curl.exe -sL https://github.com/ops612/hl-desk-releases/releases/latest/download/latest.json`
    shows the new version), and the page shows the new version.
 
+Mac-first release (0.1.7): leave out `--win` in step 4 and upload the previous release's `HL-Desk-setup.exe`
+in step 5, so the Windows download link keeps working. Windows copies then show "Could not check for
+updates" until a release with a Windows entry is latest.
+
 If the page text changes, edit `site/index.html` here and copy it to the releases repo's `index.html`.

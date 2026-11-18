@@ -52,6 +52,7 @@ Each feature lives in its own files and touches nothing else:
 | Clipboard | `src/features/clipboard/` | `src-tauri/src/clipboard.rs` |
 | Screenshot | `src/features/screenshot/` | `src-tauri/src/screenshot.rs` |
 | Notes | `src/features/notes/` | `src-tauri/src/notes.rs` |
+| Translate (copy twice) | `translate.html`, `src/translate/`, `public/translate/` (Bergamot engine, MPL-2.0, see `THIRD_PARTY_NOTICES.md`) | `src-tauri/src/translate.rs` |
 
 Shared files (change only in a separate, reviewed PR): `src/main.ts` (tabs), `src-tauri/src/lib.rs`
 (tray, shortcut, plugins, routing), `src-tauri/src/db.rs`, `package.json`, `Cargo.toml`,

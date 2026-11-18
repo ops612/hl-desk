@@ -107,6 +107,14 @@ async function loadSettings(): Promise<Settings | null> {
   }
 }
 
+document.getElementById("open-notices")!.addEventListener("click", () => {
+  settingsError.hidden = true;
+  invoke("shell_open_notices").catch((e) => {
+    settingsError.textContent = `Could not open the notices: ${String(e)}`;
+    settingsError.hidden = false;
+  });
+});
+
 loginSwitch.addEventListener("change", async () => {
   settingsError.hidden = true;
   const want = loginSwitch.checked;

@@ -1,0 +1,3 @@
+# The bundled translation engine stays byte-for-byte as pinned (sha256 in public/translate/engine.worker.js).
+public/translate/bergamot-translator.js -text
+public/translate/bergamot-translator.wasm binary

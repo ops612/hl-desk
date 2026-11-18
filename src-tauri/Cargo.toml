@@ -1,6 +1,6 @@
 [package]
 name = "hl-desk"
-version = "0.1.6"
+version = "0.1.7"
 description = "HL Desk: clipboard history, screenshots and notes in the menu bar"
 edition = "2021"
 publish = false
@@ -33,23 +33,32 @@ serde_json = "1"
 rusqlite = { version = "0.41", features = ["bundled"] }
 # Screen capture (Tauri has no official plugin for it).
 xcap = "0.9"
+# Translation model downloads (translate.rs): the same reqwest and rustls (ring) set-up as
+# tauri-plugin-updater, plus sha256 to check every file against the pinned manifest.
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+sha2 = "0.10"
+# A second request for a pair that is already downloading waits for the same result (translate.rs).
+tokio = { version = "1", default-features = false, features = ["sync"] }
 
 # macOS pasteboard access for the clipboard feature: changeCount polling and skipping
-# org.nspasteboard.ConcealedType (password managers).
+# org.nspasteboard.ConcealedType (password managers). NSEvent, NSScreen, NSWindow: the translate
+# card goes on the screen under the pointer and comes up without taking the focus (translate.rs).
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSArray", "NSURL", "NSData", "NSDictionary", "NSError"] }
 # Text recognition (ocr.rs): Vision's VNRecognizeTextRequest.
 objc2-vision = "0.3"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard", "NSPasteboardItem", "NSApplication", "NSResponder"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard", "NSPasteboardItem", "NSApplication", "NSResponder", "NSEvent", "NSScreen", "NSWindow", "objc2-core-foundation"] }
 
 # Windows clipboard formats for the clipboard feature: skip copies marked private
 # (ExcludeClipboardContentFromMonitorProcessing, Clipboard Viewer Ignore, CanIncludeInClipboardHistory = 0).
 # WindowsAndMessaging: show the screenshot toast on top without taking the focus (SetWindowPos).
 # Threading: the clipboard owner's process name (device screenshot only from the snipping tool).
+# LibraryLoader: the translate clipboard listener's message-only window (translate.rs).
 # Storage_FileSystem: GetDriveTypeW, so copied files on a mapped network drive are not looked up.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_DataExchange", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 # Text recognition (ocr.rs): Windows.Media.Ocr (same windows version as already in Cargo.lock).
 windows = { version = "0.62", features = ["Foundation", "Foundation_Collections", "Globalization", "Graphics_Imaging", "Media_Ocr", "Storage_Streams", "System_UserProfile"] }
 windows-future = "0.3"

@@ -3,7 +3,10 @@
 // (Tauri's static format; steps in docs/release.md). Node only, no dependencies.
 //
 //   node scripts/make-latest-json.mjs --version 0.1.4 --notes "What changed" \
-//     --mac <HL-Desk-mac.app.tar.gz> --win <HL-Desk-setup.exe> [--out latest.json]
+//     --mac <HL-Desk-mac.app.tar.gz> [--win <HL-Desk-setup.exe>] [--out latest.json]
+//
+// Without --win the manifest is macOS only (a Mac-first release): Windows copies of the app then
+// find no entry for their platform and show "Could not check for updates" until the next release.
 //
 // Each file's signature is read from "<file>.sig" (made by the CI build) and checked against
 // the public key in src-tauri/tauri.conf.json, so a manifest the app would reject is never written.
@@ -30,7 +33,7 @@ function args() {
     if (!key.startsWith("--") || list[i + 1] === undefined) fail(`bad argument near "${key}"`);
     out[key.slice(2)] = list[i + 1];
   }
-  for (const k of ["version", "notes", "mac", "win"]) if (!out[k]) fail(`--${k} is required`);
+  for (const k of ["version", "notes", "mac"]) if (!out[k]) fail(`--${k} is required`);
   if (!/^\d+\.\d+\.\d+$/.test(out.version)) fail(`--version must look like 0.1.4, got "${out.version}"`);
   return out;
 }
@@ -83,7 +86,8 @@ function signature(file, pub, version) {
 const a = args();
 const pub = publicKey();
 const mac = { signature: signature(a.mac, pub, a.version), url: `${RELEASES}/v${a.version}/${MAC_NAME}` };
-const win = { signature: signature(a.win, pub, a.version), url: `${RELEASES}/v${a.version}/${WIN_NAME}` };
+const win = a.win ? { signature: signature(a.win, pub, a.version), url: `${RELEASES}/v${a.version}/${WIN_NAME}` } : null;
+if (!win) console.warn("make-latest-json: no --win, writing a macOS-only manifest");
 const manifest = {
   version: a.version,
   notes: a.notes,
@@ -92,7 +96,7 @@ const manifest = {
     // One universal .app serves both Mac architectures.
     "darwin-aarch64": mac,
     "darwin-x86_64": mac,
-    "windows-x86_64": win,
+    ...(win ? { "windows-x86_64": win } : {}),
   },
 };
 const out = a.out ?? "latest.json";

@@ -8,8 +8,11 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
 import "@fontsource/ibm-plex-sans/400.css";
 import "@fontsource/ibm-plex-sans/500.css";
+import "@fontsource/ibm-plex-sans/600.css";
 import "../styles.css";
+import "../translate/translate.css";
 import "./editor.css";
+import { setupTranslatePanel } from "./translate-panel";
 
 type Tool = "number" | "pen" | "crop";
 type Rect = { x: number; y: number; w: number; h: number };
@@ -626,6 +629,11 @@ document.addEventListener("keydown", (e) => {
   }
 });
 window.addEventListener("resize", () => {
+  fit();
+  render();
+});
+// Translate button and panel: the stage gets narrower or wider, so the canvas refits.
+setupTranslatePanel(id, () => {
   fit();
   render();
 });
