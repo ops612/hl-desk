@@ -783,7 +783,7 @@ fn show_card_mac(window: &WebviewWindow, height: f64) -> Result<(i32, i32), Stri
         (f.origin.x, f.origin.y, f.size.width, f.size.height)
     };
     // Cocoa's origin is the bottom-left of the first screen; Tauri's is its top-left.
-    let primary_h = screens.first().map(|s| rect(&***s).3).ok_or("no screen")?;
+    let primary_h = screens.first().map(|s| rect(&**s).3).ok_or("no screen")?;
     let screen = screens
         .iter()
         .find(|s| {
