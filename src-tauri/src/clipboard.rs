@@ -287,39 +287,35 @@ fn file_size(path: &Option<String>) -> u64 {
     path.as_deref().and_then(|p| fs::metadata(p).ok()).map_or(0, |m| m.len())
 }
 
-/// Deletes the oldest unpinned images until clipboard-images holds at most `cap` bytes.
+/// Deletes the oldest unpinned images until the image files the rows own (picture and
+/// thumbnail) add up to at most `cap` bytes. Never deletes `keep_id`, the image just recorded.
 /// Returns how many images were deleted.
-fn enforce_images_cap(conn: &Connection, images: &Path, cap: u64) -> usize {
-    let Ok(entries) = fs::read_dir(images) else { return 0 };
-    let mut total: u64 = entries
-        .filter_map(Result::ok)
-        .filter_map(|e| e.metadata().ok())
-        .filter(|m| m.is_file())
-        .map(|m| m.len())
-        .sum();
-    if total <= cap {
-        return 0;
-    }
-    let oldest: Vec<(i64, u64)> = {
+fn enforce_images_cap(conn: &Connection, images: &Path, cap: u64, keep_id: i64) -> usize {
+    // (id, pinned, bytes), oldest first.
+    let rows: Vec<(i64, bool, u64)> = {
         let Ok(mut stmt) = conn.prepare(
-            "SELECT id, image_path, thumb_path FROM items WHERE kind = 'image' AND pinned = 0
+            "SELECT id, pinned, image_path, thumb_path FROM items WHERE kind = 'image'
              ORDER BY created_at, id",
         ) else {
             return 0;
         };
         let rows = stmt.query_map([], |r| {
-            Ok((r.get::<_, i64>(0)?, file_size(&r.get(1)?) + file_size(&r.get(2)?)))
+            Ok((r.get::<_, i64>(0)?, r.get::<_, bool>(1)?, file_size(&r.get(2)?) + file_size(&r.get(3)?)))
         });
-        let oldest: Vec<(i64, u64)> = match rows {
+        let rows: Vec<(i64, bool, u64)> = match rows {
             Ok(rows) => rows.filter_map(Result::ok).collect(),
             Err(_) => return 0,
         };
-        oldest
+        rows
     };
+    let mut total: u64 = rows.iter().map(|&(_, _, size)| size).sum();
     let mut deleted = 0;
-    for (id, size) in oldest {
+    for (id, pinned, size) in rows {
         if total <= cap {
             break;
+        }
+        if pinned || id == keep_id {
+            continue;
         }
         if delete_where(conn, images, "id = ?1", params![id]).unwrap_or(0) > 0 {
             total = total.saturating_sub(size);
@@ -384,14 +380,39 @@ fn file_name(path: &str) -> &str {
     path.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or(path)
 }
 
-/// A UNC path (\\server\share\..., also \\?\UNC\...): looking it up can hang for a long time
-/// when the server is offline.
+/// A UNC path (\\server\share\..., also \\?\UNC\...) or, on Windows, a path on a mapped network
+/// drive: looking it up can hang for a long time when the server is offline.
 fn is_network_path(path: &str) -> bool {
     let p = path.replace('/', "\\");
-    if let Some(rest) = p.strip_prefix(r"\\?\").or_else(|| p.strip_prefix(r"\\.\")) {
-        return rest.get(..4).is_some_and(|s| s.eq_ignore_ascii_case(r"UNC\"));
+    let local = match p.strip_prefix(r"\\?\").or_else(|| p.strip_prefix(r"\\.\")) {
+        Some(rest) if rest.get(..4).is_some_and(|s| s.eq_ignore_ascii_case(r"UNC\")) => return true,
+        Some(rest) => rest,
+        None if p.starts_with(r"\\") => return true,
+        None => p.as_str(),
+    };
+    drive_root(local).is_some_and(|root| is_remote_drive(&root))
+}
+
+/// The drive root of a Windows path ("Z:\" for "Z:\folder\a.txt").
+fn drive_root(path: &str) -> Option<String> {
+    match path.as_bytes() {
+        [letter, b':', ..] if letter.is_ascii_alphabetic() => Some(format!("{}:\\", *letter as char)),
+        _ => None,
     }
-    p.starts_with(r"\\")
+}
+
+/// Whether a drive root is a mapped network drive (asks Windows only, not the server).
+#[cfg(windows)]
+fn is_remote_drive(root: &str) -> bool {
+    const DRIVE_REMOTE: u32 = 4;
+    let wide: Vec<u16> = root.encode_utf16().chain(Some(0)).collect();
+    // SAFETY: `wide` is a NUL-terminated UTF-16 string that outlives the call.
+    unsafe { windows_sys::Win32::Storage::FileSystem::GetDriveTypeW(wide.as_ptr()) == DRIVE_REMOTE }
+}
+
+#[cfg(not(windows))]
+fn is_remote_drive(_root: &str) -> bool {
+    false
 }
 
 /// Whether a copied file is still there. Network paths are not looked up (counted as there),
@@ -608,7 +629,7 @@ fn record_image(state: &Clipboard, image: &Image<'_>) -> bool {
         return false;
     }
     applog::info(&format!("clipboard: recorded image {width}x{height} ({} KB)", png.len() / 1024));
-    enforce_images_cap(&conn, &state.images, MAX_IMAGES_DIR_BYTES);
+    enforce_images_cap(&conn, &state.images, MAX_IMAGES_DIR_BYTES, id);
     true
 }
 
@@ -1550,6 +1571,12 @@ mod tests {
         assert!(!is_network_path(r"C:\Users\a.txt"));
         assert!(!is_network_path("/Users/a.txt"));
         assert!(!is_network_path(""));
+        assert_eq!(drive_root(r"Z:\share\a.txt").as_deref(), Some(r"Z:\"));
+        assert_eq!(drive_root("z:/a.txt").as_deref(), Some(r"z:\"));
+        assert_eq!(drive_root(r"\Users\a.txt"), None);
+        assert_eq!(drive_root("1:"), None);
+        // The system drive is never a network drive.
+        assert!(!is_network_path(r"\\?\C:\Windows\a.txt"));
         // Not looked up, so counted as present even though the server does not exist.
         assert!(file_present(r"\\hl-desk-no-such-server\share\a.txt"));
     }
@@ -1640,16 +1667,38 @@ mod tests {
         add_image(&conn, &images, "b", 2, false, 100);
         let newer = add_image(&conn, &images, "c", 3, false, 100);
 
-        assert_eq!(enforce_images_cap(&conn, &images, 600), 0);
-        assert_eq!(enforce_images_cap(&conn, &images, 400), 1);
+        assert_eq!(enforce_images_cap(&conn, &images, 600, newer), 0);
+        assert_eq!(enforce_images_cap(&conn, &images, 400, newer), 1);
         assert_eq!(ids(&conn), vec![pinned, newer]);
         assert!(!images.join("b.png").exists() && !images.join("b-thumb.png").exists());
         assert!(images.join("a.png").exists() && images.join("c.png").exists());
 
-        // Pinned images are never deleted, even when they alone are over the cap.
-        assert_eq!(enforce_images_cap(&conn, &images, 0), 1);
+        // Pinned images and the image just recorded are never deleted, even when the pinned
+        // ones alone are over the cap.
+        assert_eq!(enforce_images_cap(&conn, &images, 0, newer), 0);
+        assert_eq!(ids(&conn), vec![pinned, newer]);
+        assert!(images.join("a.png").exists() && images.join("c.png").exists());
+
+        // Any other unpinned image does go.
+        assert_eq!(enforce_images_cap(&conn, &images, 0, -1), 1);
         assert_eq!(ids(&conn), vec![pinned]);
-        assert!(images.join("a.png").exists());
+        let _ = fs::remove_dir_all(&images);
+    }
+
+    #[test]
+    fn size_cap_counts_only_files_rows_own() {
+        let images = temp_dir();
+        let conn = db_in_memory();
+        let older = add_image(&conn, &images, "a", 1, false, 100);
+        let newer = add_image(&conn, &images, "b", 2, false, 100);
+        // A file no row owns (an orphan or one waiting for a Keep undo) is not counted, so it
+        // cannot make the cap wipe the history.
+        fs::write(images.join("orphan.png"), vec![0u8; 5000]).unwrap();
+        assert_eq!(enforce_images_cap(&conn, &images, 400, newer), 0);
+        assert_eq!(ids(&conn), vec![older, newer]);
+        assert_eq!(enforce_images_cap(&conn, &images, 300, newer), 1);
+        assert_eq!(ids(&conn), vec![newer]);
+        assert!(images.join("orphan.png").exists());
         let _ = fs::remove_dir_all(&images);
     }
 }

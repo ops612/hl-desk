@@ -45,8 +45,9 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["std", 
 # (ExcludeClipboardContentFromMonitorProcessing, Clipboard Viewer Ignore, CanIncludeInClipboardHistory = 0).
 # WindowsAndMessaging: show the screenshot toast on top without taking the focus (SetWindowPos).
 # Threading: the clipboard owner's process name (device screenshot only from the snipping tool).
+# Storage_FileSystem: GetDriveTypeW, so copied files on a mapped network drive are not looked up.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [profile.release]
 codegen-units = 1
