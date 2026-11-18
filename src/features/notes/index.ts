@@ -251,7 +251,7 @@ export function mount(el: HTMLElement): void {
     textarea.toggleAttribute("data-autofocus", editor);
     status.textContent = "";
     voiceTrouble = false;
-    if (!editor) stopDictation();
+    if (!editor) stopDictation(false, "left the note");
     else void refreshOffline();
     renderVoice();
   }
@@ -406,7 +406,7 @@ export function mount(el: HTMLElement): void {
   let quietTimer: number | undefined;
   /** Show the "didn't start" hint (a failed start, or no text after one). */
   let voiceTrouble = false;
-  /** Settings > Offline voice to text is on (Windows): the mic records in the app, no Win+H. */
+  /** Settings > Voice to text > Offline mode is on (Windows): the mic records in the app, no Win+H. */
   let offlineOn = false;
   /** The current dictation is an offline recording. */
   let offline = false;
@@ -416,6 +416,7 @@ export function mount(el: HTMLElement): void {
   let starting = false;
   /** Stop, Esc or closing the note came while the offline microphone was opening. */
   let stopWhileOpening = false;
+  let stopReason = "";
 
   async function refreshOffline(): Promise<boolean> {
     if (isMac) return false;
@@ -449,7 +450,7 @@ export function mount(el: HTMLElement): void {
     } else if (dictating && offline) {
       voiceHint.textContent = "Listening… click Stop or press Esc";
     } else if (offlineOn) {
-      voiceHint.textContent = "Speak in English (offline voice to text)";
+      voiceHint.textContent = "Speak in English (offline mode)";
     } else if (voiceTrouble) {
       voiceHint.textContent = DICTATION_TROUBLE;
     } else if (dictating) {
@@ -460,8 +461,9 @@ export function mount(el: HTMLElement): void {
     voiceHint.title = voiceHint.textContent;
   }
 
-  /** end: the user stopped it (mic or Esc), so the computer's dictation is ended too. */
-  function stopDictation(end = false): void {
+  /** end: the user stopped it (mic or Esc), so the computer's dictation is ended too.
+   *  reason: why it stopped, for the log. */
+  function stopDictation(end = false, reason = end ? "stopped by the user" : "stopped"): void {
     clearTimeout(dictationTimer);
     clearTimeout(quietTimer);
     if (!dictating) return;
@@ -469,11 +471,11 @@ export function mount(el: HTMLElement): void {
       // Still opening the microphone: startOffline calls it off once notes_dictate answers.
       if (starting) {
         stopWhileOpening = true;
+        stopReason = reason;
         return;
       }
-      // Stop / Esc: write it down. The note closed: throw the recording away.
-      if (end) void finishOffline();
-      else cancelOffline();
+      // Every way out keeps the words: Stop, Esc, 120 s, leaving the note, the window hidden.
+      void finishOffline(reason);
       return;
     }
     dictating = false;
@@ -511,7 +513,9 @@ export function mount(el: HTMLElement): void {
     renderVoice();
     log("info", "dictation requested");
     clearTimeout(dictationTimer);
-    dictationTimer = window.setTimeout(stopDictation, DICTATION_MS);
+    dictationTimer = window.setTimeout(() => {
+      if (!offline) stopDictation(false, "60 s limit");
+    }, DICTATION_MS);
     try {
       const started = await api.dictate();
       textarea.focus();
@@ -528,14 +532,15 @@ export function mount(el: HTMLElement): void {
         // macOS: nothing took startDictation:, so dictation is most likely off.
         voice = { available: true, off: true };
         log("warn", "dictation did not start (off in System Settings?)");
-        stopDictation();
+        if (!offline) stopDictation(false, "did not start");
       }
     } catch (e) {
       log("error", `dictation failed: ${e}`);
       status.textContent = `Could not start dictation: ${e}`;
       // Not when our window was not in front (notes.rs): the status line already says so.
       voiceTrouble = !String(e).includes("not the window in front");
-      stopDictation();
+      // Never ends an offline recording (the OS path only stops its own dictation).
+      if (!offline) stopDictation(false, "start failed");
     }
     renderVoice();
   }
@@ -564,8 +569,7 @@ export function mount(el: HTMLElement): void {
     }
     if (failed === null && (stopWhileOpening || draft !== d || editorView.hidden)) {
       // Stop, Esc or closing the note came while the microphone was opening.
-      log("info", "offline voice to text: stopped while the microphone was opening");
-      cancelOffline();
+      cancelOffline(`while the microphone was opening: ${stopWhileOpening ? stopReason : "the note changed"}`);
       return;
     }
     if (failed !== null) {
@@ -579,32 +583,34 @@ export function mount(el: HTMLElement): void {
       return;
     }
     clearTimeout(dictationTimer);
-    dictationTimer = window.setTimeout(() => void finishOffline(), OFFLINE_MAX_MS);
+    dictationTimer = window.setTimeout(() => void finishOffline("120 s limit"), OFFLINE_MAX_MS);
   }
 
-  function cancelOffline(): void {
+  /** Only for a recording stopped while the microphone was still opening (nothing to keep). */
+  function cancelOffline(reason: string): void {
     dictating = false;
     offline = false;
-    log("info", "offline voice to text: cancelled");
+    log("info", `offline voice to text: cancelled (${reason})`);
     api.voiceCancel().catch(() => {});
     api.dictationStop(false).catch(() => {});
     renderVoice();
   }
 
-  async function finishOffline(): Promise<void> {
+  async function finishOffline(reason: string): Promise<void> {
     if (!offline || !dictating) return;
     clearTimeout(dictationTimer);
     dictating = false;
     writing = true;
     renderVoice();
+    log("info", `offline voice to text: stop (${reason})`);
     const d = draft;
     try {
       const text = await api.voiceStop();
-      if (!d || draft !== d || editorView.hidden) {
-        log("warn", "offline voice to text: the note was closed before the text was ready");
-      } else {
+      if (d && draft === d && !editorView.hidden) {
         insertAtCursor(text);
         log("info", `offline voice to text: inserted ${text.length} characters`);
+      } else if (d) {
+        await keepInNote(d, text);
       }
     } catch (e) {
       log("error", `offline voice to text: ${e}`);
@@ -614,6 +620,23 @@ export function mount(el: HTMLElement): void {
       offline = false;
       api.dictationStop(false).catch(() => {});
       renderVoice();
+    }
+  }
+
+  /** The note was left while its words were being written down: add them to the end of that
+   *  note (a new note if it was empty and so never saved, or has been removed). */
+  async function keepInNote(d: Draft, text: string): Promise<void> {
+    try {
+      await saveChain;
+      const note = d.id === null ? null : await api.get(d.id);
+      const id = note ? note.id : (await api.create()).id;
+      const body = note ? note.body : "";
+      const gap = body && !/\s$/.test(body) ? " " : "";
+      await api.save(id, body + gap + text);
+      log("info", `offline voice to text: the note was left; ${text.length} characters added to note ${id}`);
+      if (!draft) void refresh();
+    } catch (e) {
+      log("error", `offline voice to text: could not keep the text: ${e}`);
     }
   }
 
@@ -630,9 +653,18 @@ export function mount(el: HTMLElement): void {
 
   function toggleDictation(): void {
     if (writing) return;
-    if (dictating) stopDictation(true);
+    if (dictating) stopDictation(true, "Stop clicked");
     else void startDictation();
   }
+
+  // Offline recording keeps going when the popover loses the focus (notes.rs keeps it open).
+  // Hidden another way (tray icon, shortcut) or another tab chosen: stop and keep the words.
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden && offline && dictating) stopDictation(true, "window hidden");
+  });
+  new MutationObserver(() => {
+    if (el.hidden && offline && dictating) stopDictation(true, "switched tab");
+  }).observe(el, { attributes: true, attributeFilter: ["hidden"] });
 
   // Keep the textarea's focus and cursor when the mic is clicked.
   mic.addEventListener("mousedown", (e) => e.preventDefault());
@@ -671,7 +703,7 @@ export function mount(el: HTMLElement): void {
     } else if (e.key === "Escape" && (dictating || writing)) {
       // The first Esc stops dictation; the next one closes the window (main.ts).
       e.preventDefault();
-      if (dictating) stopDictation(true);
+      if (dictating) stopDictation(true, "Esc");
     }
   });
 

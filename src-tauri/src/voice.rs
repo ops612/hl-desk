@@ -1,4 +1,4 @@
-//! Offline voice to text (Windows only). Opt-in from Settings ("Offline voice to text"): the
+//! Offline voice to text (Windows only). Opt-in from Settings > Voice to text > Offline mode: the
 //! English whisper model (MODEL) is downloaded once; then the Notes mic (notes.rs notes_dictate)
 //! records the default microphone with cpal and whisper.cpp (whisper-rs) writes it down here,
 //! with no internet. Off, or on macOS, the Notes mic uses the computer's own dictation.
@@ -79,7 +79,7 @@ fn voice_set_enabled(app: AppHandle, on: bool) -> Result<Status, String> {
     #[cfg(not(windows))]
     {
         let _ = (app, on);
-        Err("Offline voice to text is only on Windows.".into())
+        Err("Offline mode is only on Windows.".into())
     }
 }
 
@@ -93,7 +93,7 @@ async fn voice_download(app: AppHandle, on_progress: Channel<Progress>) -> Resul
     #[cfg(not(windows))]
     {
         let _ = (app, on_progress);
-        Err("Offline voice to text is only on Windows.".into())
+        Err("Offline mode is only on Windows.".into())
     }
 }
 
@@ -107,7 +107,7 @@ async fn voice_stop(app: AppHandle) -> Result<String, String> {
     #[cfg(not(windows))]
     {
         let _ = app;
-        Err("Offline voice to text is only on Windows.".into())
+        Err("Offline mode is only on Windows.".into())
     }
 }
 
@@ -217,15 +217,15 @@ mod imp {
     /// whisper.cpp skips input shorter than 1 s; shorter recordings are padded with silence.
     const MIN_PCM: usize = 17_600;
 
-    pub const CPU_REASON: &str = "This PC's processor can't run offline voice to text (it needs AVX2).";
+    pub const CPU_REASON: &str = "Not available: this PC's processor lacks AVX.";
     const NO_MIC: &str = "No microphone found. Plug one in, or turn it on in Windows sound settings.";
     const NO_ACCESS: &str =
         "HL Desk can't use the microphone. Turn on Settings > Privacy > Microphone > Let desktop apps access your microphone.";
     const SILENT: &str =
         "No sound was recorded. Check the microphone, and Settings > Privacy > Microphone > Let desktop apps access your microphone.";
     const MISSING: &str =
-        "The voice model isn't downloaded. Turn on Offline voice to text in Settings to download it.";
-    const STILL_DOWNLOADING: &str = "Offline voice is still downloading (see Settings).";
+        "The voice model isn't downloaded. Turn on Offline mode (Settings > Voice to text) to download it.";
+    const STILL_DOWNLOADING: &str = "Offline mode is still downloading (Settings > Voice to text).";
 
     static DOWNLOADING: AtomicBool = AtomicBool::new(false);
 
@@ -233,16 +233,14 @@ mod imp {
         m.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// whisper.cpp is built with GGML_NATIVE=OFF, which still uses AVX, AVX2, FMA, F16C and BMI2
-    /// (CI's system info line); on a processor without them it would crash.
+    /// whisper.cpp is built for AVX only (build.yml GGML_* flags: MSVC /arch:AVX, with SSE up to
+    /// 4.2; no AVX2, FMA, BMI2 or F16C code), so it runs from Sandy Bridge on; on a processor
+    /// without AVX it would crash with an illegal instruction. The check also covers the OS
+    /// saving AVX state (is_x86_feature_detected checks OSXSAVE).
     pub fn cpu_supported() -> bool {
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
-            is_x86_feature_detected!("avx")
-                && is_x86_feature_detected!("avx2")
-                && is_x86_feature_detected!("fma")
-                && is_x86_feature_detected!("f16c")
-                && is_x86_feature_detected!("bmi2")
+            is_x86_feature_detected!("avx") && is_x86_feature_detected!("sse4.2")
         }
         #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
         {
@@ -684,8 +682,20 @@ mod tests {
 
     #[test]
     fn cpu_check_runs() {
-        // CI's runner has AVX2; the check itself must not panic.
-        eprintln!("voice: cpu supported = {}", imp::cpu_supported());
+        // CI's runner has AVX; the check itself must not panic.
+        assert!(imp::cpu_supported());
+    }
+
+    /// whisper.cpp must be built for AVX only (build.yml GGML_* flags), or it crashes on
+    /// Ivy Bridge PCs (illegal instruction 0xc000001d); cpu_supported() relies on this.
+    #[test]
+    fn whisper_is_built_for_avx_only() {
+        let info = whisper_rs::print_system_info();
+        eprintln!("voice: system {info}");
+        assert!(info.contains("AVX = 1"), "AVX should be on: {info}");
+        for flag in ["AVX2 = 1", "FMA = 1", "BMI2 = 1", "AVX512 = 1"] {
+            assert!(!info.contains(flag), "{flag} in a build that must run without it: {info}");
+        }
     }
 
     fn read_wav(path: &Path) -> Vec<f32> {

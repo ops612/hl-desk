@@ -176,9 +176,17 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 60
     env:
-      # whisper.cpp (voice.rs): no -march=native, so the app does not depend on the runner's CPU
-      # (it still needs AVX2).
+      # whisper.cpp (voice.rs; whisper-rs-sys passes GGML_* to cmake): not tuned to the runner's
+      # CPU, and AVX only (MSVC /arch:AVX), so it runs on Sandy/Ivy Bridge PCs: no AVX2, FMA,
+      # BMI2 or AVX512. voice.rs cpu_supported() checks the same at run time. Changing these
+      # needs a new rust-cache key below, as whisper-rs-sys does not rebuild on env changes.
       GGML_NATIVE: "OFF"
+      GGML_AVX: "ON"
+      GGML_AVX2: "OFF"
+      GGML_FMA: "OFF"
+      GGML_F16C: "ON"
+      GGML_BMI2: "OFF"
+      GGML_AVX512: "OFF"
     steps:
       - uses: actions/checkout@v4
 
@@ -192,6 +200,8 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          # Bump with the GGML_* flags above.
+          key: ggml-avx1
 
       - run: npm ci
 

@@ -181,7 +181,7 @@ fn notes_delete(store: State<'_, Store>, id: i64) -> Result<(), String> {
 }
 
 // ---- Voice to text: the computer's own dictation (no cloud API, no model in the app) ----
-// Windows with Settings > Offline voice to text on: voice.rs records and transcribes in the app
+// Windows with Settings > Voice to text > Offline mode on: voice.rs records and transcribes in the app
 // instead, and Win+H is never sent.
 //
 // Windows: Win+H opens Voice typing, which types into the focused field (the note's textarea).

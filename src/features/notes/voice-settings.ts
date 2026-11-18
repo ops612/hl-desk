@@ -6,7 +6,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 
 type VoiceStatus = {
   supported: boolean;
-  /** Why this PC can't run it (no AVX2), or null. */
+  /** Why this PC can't run it (no AVX), or null. */
   unsupportedReason: string | null;
   enabled: boolean;
   installed: boolean;
@@ -26,9 +26,9 @@ export function mountVoiceSettings(el: HTMLElement): void {
   el.innerHTML = `
     <h3 class="sheet-section">Voice to text</h3>
     <div class="setting">
-      <span class="setting-label">Offline voice to text<span class="hint voice-hint" role="status">${HINT}</span></span>
+      <span class="setting-label">Offline mode<span class="hint voice-hint" role="status">${HINT}</span></span>
       <button class="btn voice-retry" type="button" hidden>Retry</button>
-      <input class="switch voice-switch" type="checkbox" role="switch" aria-label="Offline voice to text" />
+      <input class="switch voice-switch" type="checkbox" role="switch" aria-label="Offline mode" />
     </div>
     <p class="setting-error voice-error" role="alert" hidden></p>`;
 
@@ -60,7 +60,7 @@ export function mountVoiceSettings(el: HTMLElement): void {
       await invoke("voice_download", { onProgress: channel });
       log("info", "model downloaded");
       // Turned off while it downloaded: no "works without internet" line while off.
-      hint.textContent = sw.checked ? "Downloaded. Dictate in Notes now works without internet." : HINT;
+      hint.textContent = sw.checked ? "Downloaded. Works without internet." : HINT;
     } catch (e) {
       log("error", `model download: ${e}`);
       hint.textContent = HINT;
