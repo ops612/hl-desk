@@ -2,14 +2,42 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { pngUrl } from "../../png-url";
 import "./clipboard.css";
+
+type Kind = "text" | "image" | "files";
 
 interface Item {
   id: number;
+  kind: Kind;
+  /** Text; for files their names, one per line; empty for images. */
   text: string;
+  imagePath?: string | null;
+  thumbPath?: string | null;
+  width?: number | null;
+  height?: number | null;
+  /** Files: absolute paths. */
+  files: string[];
+  /** Files: how many no longer exist. */
+  missing: number;
   createdAt: number; // unix seconds
   pinned: boolean;
 }
+
+/** Filter chips under the search: "" is All. */
+const FILTERS: [Kind | "", string][] = [
+  ["", "All"],
+  ["text", "Text"],
+  ["image", "Images"],
+  ["files", "Files"],
+];
+
+const EMPTY: Record<Kind | "", string> = {
+  "": "Copy text, an image or files and it shows up here.",
+  text: "Copy some text and it shows up here.",
+  image: "Copy an image and it shows up here.",
+  files: "Copy files in Explorer or Finder and they show up here.",
+};
 
 const KEEP_OPTIONS: [number, string][] = [
   [1, "1 hour"],
@@ -30,10 +58,31 @@ const isMac = navigator.userAgent.includes("Mac");
 const UNDO_MS = 5000;
 /** Pinned only: how long "Copied. Click your app, then Ctrl+V" shows (unpinned, the popover hides at once). */
 const COPIED_PINNED_MS = 1500;
+/** How long a copy error ("The file is no longer there") shows. */
+const ERROR_MS = 2500;
+
+const FOLDER_ICON =
+  '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.6l1.4 1.5h5A1.5 1.5 0 0 1 14 6v5.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5z" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>';
+
+function fileName(path: string): string {
+  const parts = path.replace(/[\\/]+$/, "").split(/[\\/]/);
+  return parts[parts.length - 1] || path;
+}
+
+/** "PDF", "XLSX" ... for the tile; "" for a name without one (often a folder). */
+function extension(name: string): string {
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0 || dot === name.length - 1) return "";
+  return name.slice(dot + 1).toUpperCase().slice(0, 4);
+}
 
 export function mount(el: HTMLElement): void {
   el.innerHTML = `
     <div class="toolbar"><input class="field" type="search" placeholder="Search clipboard" aria-label="Search clipboard" spellcheck="false" /></div>
+    <div class="cb-chips" role="group" aria-label="Show">${FILTERS.map(
+      ([kind, label]) =>
+        `<button type="button" class="cb-chip" data-kind="${kind}" aria-pressed="${kind === ""}">${label}</button>`,
+    ).join("")}</div>
     <ul class="scroll cb-list" role="listbox" aria-label="Clipboard history"></ul>
     <div class="undo-bar" role="status" hidden>
       <span class="cb-undo-text">Item deleted</span>
@@ -50,6 +99,8 @@ export function mount(el: HTMLElement): void {
   const undoBar = el.querySelector<HTMLElement>(".undo-bar")!;
   const undoText = el.querySelector<HTMLElement>(".cb-undo-text")!;
   const toast = el.querySelector<HTMLElement>(".toast")!;
+  const toastHtml = toast.innerHTML;
+  const chips = [...el.querySelectorAll<HTMLButtonElement>(".cb-chip")];
 
   let items: Item[] = [];
   let selected = 0;
@@ -59,6 +110,9 @@ export function mount(el: HTMLElement): void {
   /** What the undo bar offers: commit runs when the 5 s end (or another undoable action starts). */
   let undo: { timer: number; commit: () => Promise<void>; revert: () => Promise<void> } | null = null;
   let copiedTimer: number | undefined;
+  let filter: Kind | "" = "";
+  /** Thumbnail object URLs by item id, made once per image. */
+  const thumbs = new Map<number, Promise<string>>();
 
   function timeLeft(item: Item): string {
     if (item.pinned) return "Pinned";
@@ -74,9 +128,7 @@ export function mount(el: HTMLElement): void {
     if (items.length === 0) {
       const empty = document.createElement("li");
       empty.className = "empty";
-      empty.textContent = search.value.trim()
-        ? "Nothing matches your search."
-        : "Copy some text and it shows up here.";
+      empty.textContent = search.value.trim() ? "Nothing matches your search." : EMPTY[filter];
       list.append(empty);
       return;
     }
@@ -85,11 +137,8 @@ export function mount(el: HTMLElement): void {
       row.className = "row cb-row";
       row.setAttribute("role", "option");
       row.setAttribute("aria-selected", String(i === selected));
-      row.title = item.text.length > 500 ? item.text.slice(0, 500) + "..." : item.text;
-
-      const text = document.createElement("span");
-      text.className = "cb-text";
-      text.textContent = item.text;
+      const content = rowContent(item);
+      row.title = content.title;
 
       const actions = document.createElement("span");
       actions.className = "cb-actions";
@@ -117,11 +166,94 @@ export function mount(el: HTMLElement): void {
       left.className = "cb-left";
       left.textContent = timeLeft(item);
 
-      row.append(text, actions, left);
+      row.append(...content.nodes, actions, left);
       row.addEventListener("click", () => void copy(item));
       row.addEventListener("mousemove", () => select(i));
       list.append(row);
     });
+  }
+
+  /** What a row shows before its actions: text; thumbnail + "Image · W × H"; tile + file name. */
+  function rowContent(item: Item): { nodes: HTMLElement[]; title: string } {
+    const text = document.createElement("span");
+    text.className = "cb-text";
+    if (item.kind === "image") {
+      const img = document.createElement("img");
+      img.className = "cb-thumb";
+      img.alt = "";
+      void thumbUrl(item.id)
+        .then((url) => (img.src = url))
+        .catch(() => img.classList.add("cb-broken"));
+      const size = item.width && item.height ? ` · ${item.width} × ${item.height}` : "";
+      text.textContent = `Image${size}`;
+      return { nodes: [img, text], title: text.textContent };
+    }
+    if (item.kind === "files") {
+      const name = fileName(item.files[0] ?? "");
+      const ext = extension(name);
+      const tile = document.createElement("span");
+      tile.className = "cb-ext";
+      if (ext) tile.textContent = ext;
+      else tile.innerHTML = FOLDER_ICON;
+      text.classList.add("cb-file");
+      const nameEl = document.createElement("span");
+      nameEl.className = "cb-name";
+      nameEl.textContent = name;
+      text.append(nameEl);
+      if (item.files.length > 1) {
+        const more = document.createElement("span");
+        more.className = "cb-more";
+        more.textContent = ` + ${item.files.length - 1} more`;
+        text.append(more);
+      }
+      if (item.missing > 0) {
+        const tag = document.createElement("span");
+        tag.className = "cb-missing";
+        tag.textContent = item.missing === item.files.length ? "missing" : `${item.missing} missing`;
+        text.append(tag);
+        if (item.missing === item.files.length) tile.classList.add("cb-gone");
+      }
+      return { nodes: [tile, text], title: item.files.join("\n") };
+    }
+    text.textContent = item.text;
+    return { nodes: [text], title: item.text.length > 500 ? item.text.slice(0, 500) + "..." : item.text };
+  }
+
+  function thumbUrl(id: number): Promise<string> {
+    let url = thumbs.get(id);
+    if (!url) {
+      url = invoke<ArrayBuffer>("clipboard_thumb", { id }).then(pngUrl);
+      url.catch(() => thumbs.delete(id));
+      thumbs.set(id, url);
+    }
+    return url;
+  }
+
+  /** Frees the thumbnails of items that are gone (deleted or expired). */
+  function dropThumbs(keep: Set<number>): void {
+    for (const [id, url] of thumbs) {
+      if (keep.has(id)) continue;
+      thumbs.delete(id);
+      void url.then((u) => URL.revokeObjectURL(u)).catch(() => {});
+    }
+  }
+
+  function setFilter(kind: Kind | ""): void {
+    if (kind === filter) return;
+    filter = kind;
+    for (const chip of chips) chip.setAttribute("aria-pressed", String(chip.dataset.kind === kind));
+    selected = 0;
+    void refresh();
+  }
+  for (const chip of chips) chip.addEventListener("click", () => setFilter((chip.dataset.kind ?? "") as Kind | ""));
+
+  function showToast(html: string, ms: number): void {
+    clearTimeout(copiedTimer);
+    toast.innerHTML = html;
+    toast.hidden = false;
+    copiedTimer = window.setTimeout(() => {
+      toast.hidden = true;
+    }, ms);
   }
 
   function select(i: number): void {
@@ -134,8 +266,10 @@ export function mount(el: HTMLElement): void {
   }
 
   async function refresh(): Promise<void> {
-    const all = await invoke<Item[]>("clipboard_list", { query: search.value });
+    const all = await invoke<Item[]>("clipboard_list", { query: search.value, kind: filter });
     items = all.filter((item) => item.id !== pendingId);
+    // Unfiltered and unsearched, the list is everything: thumbnails not in it are gone.
+    if (!filter && !search.value.trim()) dropThumbs(new Set(all.map((i) => i.id)));
     selected = Math.min(selected, Math.max(0, items.length - 1));
     render();
   }
@@ -143,7 +277,15 @@ export function mount(el: HTMLElement): void {
   /** Copies. Unpinned, hides the popover at once so Ctrl+V goes to the user's app; pinned, it
    *  stays open and shows "Copied. Click your app, then Ctrl+V". */
   async function copy(item: Item): Promise<void> {
-    await invoke("clipboard_copy", { id: item.id });
+    try {
+      await invoke("clipboard_copy", { id: item.id });
+    } catch (e) {
+      // For example "The file is no longer there": say so and stay open.
+      const message = document.createElement("span");
+      message.textContent = String(e);
+      showToast(message.outerHTML, ERROR_MS);
+      return;
+    }
     search.value = "";
     selected = 0;
     void refresh();
@@ -153,10 +295,7 @@ export function mount(el: HTMLElement): void {
       getCurrentWindow().hide().catch(() => {});
       return;
     }
-    toast.hidden = false;
-    copiedTimer = window.setTimeout(() => {
-      toast.hidden = true;
-    }, COPIED_PINNED_MS);
+    showToast(toastHtml, COPIED_PINNED_MS);
   }
 
   async function togglePin(item: Item): Promise<void> {
@@ -252,7 +391,11 @@ export function mount(el: HTMLElement): void {
       const n = removed.length;
       await offerUndo(
         `${n} older ${n === 1 ? "item" : "items"} removed`,
-        async () => {},
+        // Undo time over: now the removed images' files can go.
+        async () => {
+          if (removed.some((i) => i.kind === "image"))
+            await invoke("clipboard_drop_files", { items: removed }).catch(() => {});
+        },
         async () => {
           await invoke("clipboard_undo_keep", { hours: before, items: removed });
           keepHours = before;
@@ -278,7 +421,7 @@ export function mount(el: HTMLElement): void {
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       select(selected - 1);
-    } else if (e.key === "Enter" && item) {
+    } else if (e.key === "Enter" && item && !(e.target instanceof HTMLButtonElement)) {
       e.preventDefault();
       void copy(item);
     } else if (mod && e.key.toLowerCase() === "p" && item) {
@@ -308,6 +451,8 @@ export function mount(el: HTMLElement): void {
     if (document.body.dataset.pinned !== "true") toast.hidden = true;
     search.value = "";
     selected = 0;
+    filter = "";
+    for (const chip of chips) chip.setAttribute("aria-pressed", String(chip.dataset.kind === ""));
     if (!el.hidden) search.focus();
     void refresh();
   });

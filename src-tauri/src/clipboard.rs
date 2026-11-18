@@ -1,39 +1,111 @@
 //! Clipboard feature (Rust side). Only this file and src/features/clipboard/ belong to it.
 //!
-//! A background thread checks the system clipboard about twice a second and stores each new
-//! text copy in clipboard.db. Unpinned items older than `keep_hours` are deleted at start-up
-//! and every minute. The front end is told about changes with the "clipboard://changed" event.
+//! A background thread watches the system clipboard about twice a second and stores each new
+//! copy in clipboard.db, as one of three kinds:
+//! - "text": the text itself (up to 100 KB).
+//! - "image": a PNG of the image plus a 256 px thumbnail in `<app data>/clipboard-images/`
+//!   (`<id>.png`, `<id>-thumb.png`); images over 25 MB as PNG are skipped.
+//! - "files": the absolute paths of copied files (Explorer, Finder), never the files themselves.
+//!   The names are also kept in `text`, so search finds them.
+//! When a copy holds several kinds, files win over text and text over an image (an Excel range
+//! or a Word selection stays text, as before). Copies that password managers mark as private are
+//! skipped, and so is HL Desk's own write when it puts an item back (clipboard_copy).
+//! Unpinned items older than `keep_hours` are deleted at start-up and every minute, with their
+//! image files. The front end is told about changes with the "clipboard://changed" event.
+//! Every record, skip and copy-back is logged (kind and size only, never the content).
 
 use std::collections::hash_map::DefaultHasher;
+use std::fs;
 use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, types::ToSql, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
-use tauri::{ipc::Invoke, AppHandle, Emitter, Manager, State};
+use tauri::{
+    image::Image,
+    ipc::{Invoke, Response},
+    AppHandle, Emitter, Manager, State,
+};
 use tauri_plugin_clipboard_manager::ClipboardExt;
+use xcap::image::{
+    codecs::png::{CompressionType, FilterType, PngEncoder},
+    imageops, ExtendedColorType, ImageEncoder, ImageFormat, RgbaImage,
+};
+
+use crate::applog;
 
 const CHANGED_EVENT: &str = "clipboard://changed";
 const MAX_ITEM_BYTES: usize = 100 * 1024;
+/// Images larger than this as PNG are not kept.
+const MAX_IMAGE_BYTES: usize = 25 * 1024 * 1024;
+/// Images with more pixels than this (about 200 MB of RGBA) are skipped without encoding.
+const MAX_IMAGE_PIXELS: u64 = 50_000_000;
+/// Longest side of an image's thumbnail.
+const THUMB_SIZE: u32 = 256;
+const IMAGES_DIR: &str = "clipboard-images";
 const DEFAULT_KEEP_HOURS: i64 = 24;
 const LIST_LIMIT: i64 = 500;
+/// Every column the front end sees, in the order item_from_row reads them.
+const COLUMNS: &str = "id, kind, text, image_path, thumb_path, width, height, files_json, created_at, pinned";
 
 struct Clipboard {
     db: Mutex<Connection>,
     /// Hash of text we wrote ourselves (clipboard_copy), so the watcher does not record it again.
     skip_hash: Mutex<Option<u64>>,
+    /// The clipboard change counter (Windows sequence number, macOS changeCount) right after
+    /// HL Desk wrote an item back itself, so the watcher skips that change whatever its kind.
+    own_change: Mutex<Option<i64>>,
+    /// `<app data>/clipboard-images`.
+    images: PathBuf,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Item {
     id: i64,
+    /// "text", "image" or "files".
+    #[serde(default = "text_kind")]
+    kind: String,
+    /// The text; for files, their names one per line; empty for images.
+    #[serde(default)]
     text: String,
+    #[serde(default)]
+    image_path: Option<String>,
+    #[serde(default)]
+    thumb_path: Option<String>,
+    #[serde(default)]
+    width: Option<i64>,
+    #[serde(default)]
+    height: Option<i64>,
+    /// Files: absolute paths.
+    #[serde(default)]
+    files: Vec<String>,
+    /// Files: how many of them no longer exist (worked out when the list is read).
+    #[serde(default)]
+    missing: usize,
     /// Unix seconds.
     created_at: i64,
     pinned: bool,
+}
+
+fn text_kind() -> String {
+    "text".into()
+}
+
+/// What the watcher found on the clipboard.
+enum Copied {
+    Text(String),
+    Image(Image<'static>),
+    Files(Vec<String>),
+}
+
+/// The clipboard plugin's image borrows the app handle; the watcher keeps its own copy.
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+fn owned(image: &Image<'_>) -> Image<'static> {
+    Image::new_owned(image.rgba().to_vec(), image.width(), image.height())
 }
 
 #[derive(Serialize)]
@@ -52,9 +124,27 @@ fn hash(text: &str) -> u64 {
     h.finish()
 }
 
+fn item_from_row(r: &Row) -> rusqlite::Result<Item> {
+    let files_json: Option<String> = r.get(7)?;
+    let files = files_json.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
+    Ok(Item {
+        id: r.get(0)?,
+        kind: r.get(1)?,
+        text: r.get(2)?,
+        image_path: r.get(3)?,
+        thumb_path: r.get(4)?,
+        width: r.get(5)?,
+        height: r.get(6)?,
+        files,
+        missing: 0,
+        created_at: r.get(8)?,
+        pinned: r.get(9)?,
+    })
+}
+
 fn open_db(app: &AppHandle) -> Connection {
     let conn = crate::db::open(app, "clipboard.db").unwrap_or_else(|e| {
-        crate::applog::error(&format!("clipboard: cannot open clipboard.db ({e}); history is kept in memory only"));
+        applog::error(&format!("clipboard: cannot open clipboard.db ({e}); history is kept in memory only"));
         Connection::open_in_memory().expect("in-memory SQLite")
     });
     let setup = conn.execute_batch(
@@ -71,9 +161,36 @@ fn open_db(app: &AppHandle) -> Connection {
          );",
     );
     if let Err(e) = setup {
-        crate::applog::error(&format!("clipboard: cannot create tables: {e}"));
+        applog::error(&format!("clipboard: cannot create tables: {e}"));
+    }
+    if let Err(e) = migrate(&conn) {
+        applog::error(&format!("clipboard: cannot add the image and file columns: {e}"));
     }
     conn
+}
+
+/// 0.1.6: images and files. Adds the new columns to an existing table (old rows become "text").
+fn migrate(conn: &Connection) -> rusqlite::Result<()> {
+    const ADD: [(&str, &str); 7] = [
+        ("kind", "TEXT NOT NULL DEFAULT 'text'"),
+        ("image_path", "TEXT"),
+        ("thumb_path", "TEXT"),
+        ("width", "INTEGER"),
+        ("height", "INTEGER"),
+        ("files_json", "TEXT"),
+        // Hash of an image's pixels or of a file list, to skip the same copy twice in a row.
+        ("content_hash", "INTEGER"),
+    ];
+    let mut stmt = conn.prepare("PRAGMA table_info(items)")?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+    let existing = rows.collect::<Result<Vec<_>, _>>()?;
+    for (name, decl) in ADD {
+        if !existing.iter().any(|c| c == name) {
+            conn.execute_batch(&format!("ALTER TABLE items ADD COLUMN {name} {decl}"))?;
+            applog::info(&format!("clipboard: added column {name}"));
+        }
+    }
+    Ok(())
 }
 
 fn keep_hours(conn: &Connection) -> i64 {
@@ -84,51 +201,285 @@ fn keep_hours(conn: &Connection) -> i64 {
         .unwrap_or(DEFAULT_KEEP_HOURS)
 }
 
-/// Deletes unpinned items older than keep_hours. Returns how many were deleted.
-fn delete_expired(conn: &Connection) -> usize {
+/// Deletes an image's PNG and thumbnail files, but only files directly inside clipboard-images
+/// that no row uses any more (an undone delete or a restored id keeps them). Returns how many.
+fn remove_image_files(conn: &Connection, images: &Path, paths: &[Option<String>]) -> usize {
+    let mut removed = 0;
+    for p in paths.iter().flatten() {
+        let path = Path::new(p);
+        if path.parent() != Some(images) {
+            continue;
+        }
+        let used: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM items WHERE image_path = ?1 OR thumb_path = ?1)",
+                params![p],
+                |r| r.get(0),
+            )
+            .unwrap_or(true);
+        if used {
+            continue;
+        }
+        match fs::remove_file(path) {
+            Ok(()) => removed += 1,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => applog::warn(&format!("clipboard: cannot delete {}: {e}", path.display())),
+        }
+    }
+    removed
+}
+
+/// Deletes the rows that match `where_sql`, then their image files. Returns how many rows.
+fn delete_where(conn: &Connection, images: &Path, where_sql: &str, args: &[&dyn ToSql]) -> rusqlite::Result<usize> {
+    let paths = {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT image_path, thumb_path FROM items WHERE kind = 'image' AND ({where_sql})"
+        ))?;
+        let rows = stmt.query_map(args, |r| Ok([r.get::<_, Option<String>>(0)?, r.get(1)?]))?;
+        let paths = rows.collect::<Result<Vec<_>, _>>()?;
+        paths
+    };
+    let deleted = conn.execute(&format!("DELETE FROM items WHERE {where_sql}"), args)?;
+    remove_image_files(conn, images, &paths.concat());
+    Ok(deleted)
+}
+
+/// Deletes unpinned items older than keep_hours, with their image files. Returns how many.
+fn delete_expired(conn: &Connection, images: &Path) -> usize {
     let cutoff = now() - keep_hours(conn) * 3600;
-    conn.execute("DELETE FROM items WHERE pinned = 0 AND created_at < ?1", params![cutoff])
-        .unwrap_or(0)
+    delete_where(conn, images, "pinned = 0 AND created_at < ?1", params![cutoff]).unwrap_or(0)
+}
+
+/// Image files no row uses: left over when the app quit during a Keep change's undo time.
+fn remove_orphan_images(conn: &Connection, images: &Path) {
+    let Ok(entries) = fs::read_dir(images) else { return };
+    let paths: Vec<Option<String>> =
+        entries.filter_map(Result::ok).map(|e| Some(e.path().to_string_lossy().into_owned())).collect();
+    let removed = remove_image_files(conn, images, &paths);
+    if removed > 0 {
+        applog::info(&format!("clipboard: removed {removed} unused image file(s)"));
+    }
+}
+
+/// The newest row: (id, kind, text, content_hash).
+fn latest(conn: &Connection) -> Option<(i64, String, String, Option<i64>)> {
+    conn.query_row(
+        "SELECT id, kind, text, content_hash FROM items ORDER BY created_at DESC, id DESC LIMIT 1",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    )
+    .optional()
+    .unwrap_or(None)
+}
+
+fn move_to_top(conn: &Connection, id: i64) -> bool {
+    conn.execute("UPDATE items SET created_at = ?1 WHERE id = ?2", params![now(), id]).is_ok()
 }
 
 /// Stores a newly copied text. Returns true when the list changed.
-fn record(conn: &Connection, text: &str) -> bool {
-    if text.trim().is_empty() || text.len() > MAX_ITEM_BYTES {
+fn record_text(conn: &Connection, text: &str) -> bool {
+    if text.trim().is_empty() {
         return false;
     }
-    let latest: Option<(i64, String)> = conn
-        .query_row("SELECT id, text FROM items ORDER BY created_at DESC, id DESC LIMIT 1", [], |r| {
-            Ok((r.get(0)?, r.get(1)?))
-        })
-        .optional()
-        .unwrap_or(None);
-    let result = match latest {
+    if text.len() > MAX_ITEM_BYTES {
+        applog::info(&format!("clipboard: text skipped ({} KB, over 100 KB)", text.len() / 1024));
+        return false;
+    }
+    match latest(conn) {
         // Same text copied again: move it to the top instead of adding a duplicate.
-        Some((id, latest_text)) if latest_text == text => {
-            conn.execute("UPDATE items SET created_at = ?1 WHERE id = ?2", params![now(), id])
+        Some((id, kind, latest_text, _)) if kind == "text" && latest_text == text => {
+            applog::info("clipboard: same text again, moved to the top");
+            move_to_top(conn, id)
         }
-        _ => conn.execute(
-            "INSERT INTO items (text, created_at, pinned) VALUES (?1, ?2, 0)",
-            params![text, now()],
-        ),
-    };
-    result.is_ok()
-}
-
-/// Called by the watcher with the clipboard's current text.
-fn on_copy(app: &AppHandle, text: &str) {
-    let state = app.state::<Clipboard>();
-    {
-        let mut skip = state.skip_hash.lock().unwrap();
-        if *skip == Some(hash(text)) {
-            *skip = None;
-            return;
+        _ => {
+            let ok = conn
+                .execute(
+                    "INSERT INTO items (kind, text, created_at, pinned) VALUES ('text', ?1, ?2, 0)",
+                    params![text, now()],
+                )
+                .is_ok();
+            if ok {
+                applog::info(&format!("clipboard: recorded text ({} chars)", text.chars().count()));
+            }
+            ok
         }
     }
-    let changed = record(&state.db.lock().unwrap(), text);
+}
+
+fn file_name(path: &str) -> &str {
+    path.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or(path)
+}
+
+/// Stores a newly copied list of files (paths only). Returns true when the list changed.
+fn record_files(conn: &Connection, paths: &[String]) -> bool {
+    if paths.is_empty() {
+        return false;
+    }
+    let json = serde_json::to_string(paths).unwrap_or_default();
+    let content_hash = hash(&json) as i64;
+    match latest(conn) {
+        Some((id, kind, _, h)) if kind == "files" && h == Some(content_hash) => {
+            applog::info("clipboard: same files again, moved to the top");
+            move_to_top(conn, id)
+        }
+        _ => {
+            let names = paths.iter().map(|p| file_name(p)).collect::<Vec<_>>().join("\n");
+            let ok = conn
+                .execute(
+                    "INSERT INTO items (kind, text, files_json, content_hash, created_at, pinned)
+                     VALUES ('files', ?1, ?2, ?3, ?4, 0)",
+                    params![names, json, content_hash, now()],
+                )
+                .is_ok();
+            if ok {
+                applog::info(&format!("clipboard: recorded {} file(s)", paths.len()));
+            }
+            ok
+        }
+    }
+}
+
+/// PNG bytes of an RGBA image (fast compression).
+fn png_bytes(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    PngEncoder::new_with_quality(&mut out, CompressionType::Fast, FilterType::Adaptive)
+        .write_image(rgba, width, height, ExtendedColorType::Rgba8)
+        .map_err(|e| e.to_string())?;
+    Ok(out)
+}
+
+/// PNG of the image scaled so its longest side is at most THUMB_SIZE.
+fn thumbnail_png(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
+    if width.max(height) <= THUMB_SIZE {
+        return png_bytes(rgba, width, height);
+    }
+    let image = RgbaImage::from_raw(width, height, rgba.to_vec()).ok_or("image size does not match")?;
+    let (w, h) = if width >= height {
+        (THUMB_SIZE, ((height as u64 * THUMB_SIZE as u64) / width as u64).max(1) as u32)
+    } else {
+        (((width as u64 * THUMB_SIZE as u64) / height as u64).max(1) as u32, THUMB_SIZE)
+    };
+    let thumb = imageops::thumbnail(&image, w, h);
+    png_bytes(thumb.as_raw(), w, h)
+}
+
+/// Stores a newly copied image as PNG plus thumbnail. Returns true when the list changed.
+fn record_image(state: &Clipboard, image: &Image<'_>) -> bool {
+    let (width, height) = (image.width(), image.height());
+    if width == 0 || height == 0 || image.rgba().len() != width as usize * height as usize * 4 {
+        return false;
+    }
+    if width as u64 * height as u64 > MAX_IMAGE_PIXELS {
+        applog::info(&format!("clipboard: image skipped ({width}x{height}, too large)"));
+        return false;
+    }
+    let mut hasher = DefaultHasher::new();
+    (width, height).hash(&mut hasher);
+    image.rgba().hash(&mut hasher);
+    let content_hash = hasher.finish() as i64;
+    {
+        let conn = state.db.lock().unwrap();
+        if let Some((id, kind, _, h)) = latest(&conn) {
+            if kind == "image" && h == Some(content_hash) {
+                applog::info("clipboard: same image again, moved to the top");
+                return move_to_top(&conn, id);
+            }
+        }
+    }
+    // Encoding runs without the database lock, so the list stays responsive.
+    let png = match png_bytes(image.rgba(), width, height) {
+        Ok(png) => png,
+        Err(e) => {
+            applog::error(&format!("clipboard: could not encode the image: {e}"));
+            return false;
+        }
+    };
+    if png.len() > MAX_IMAGE_BYTES {
+        applog::info(&format!(
+            "clipboard: image skipped ({width}x{height}, {} MB as PNG, over 25 MB)",
+            png.len() / (1024 * 1024)
+        ));
+        return false;
+    }
+    let thumb = match thumbnail_png(image.rgba(), width, height) {
+        Ok(thumb) => thumb,
+        Err(e) => {
+            applog::error(&format!("clipboard: could not make the thumbnail: {e}"));
+            return false;
+        }
+    };
+    if let Err(e) = fs::create_dir_all(&state.images) {
+        applog::error(&format!("clipboard: cannot create {}: {e}", state.images.display()));
+        return false;
+    }
+    let conn = state.db.lock().unwrap();
+    if let Err(e) = conn.execute(
+        "INSERT INTO items (kind, text, width, height, content_hash, created_at, pinned)
+         VALUES ('image', '', ?1, ?2, ?3, ?4, 0)",
+        params![width, height, content_hash, now()],
+    ) {
+        applog::error(&format!("clipboard: could not store the image: {e}"));
+        return false;
+    }
+    let id = conn.last_insert_rowid();
+    let image_path = state.images.join(format!("{id}.png"));
+    let thumb_path = state.images.join(format!("{id}-thumb.png"));
+    let written = fs::write(&image_path, &png)
+        .and_then(|_| fs::write(&thumb_path, &thumb))
+        .map_err(|e| e.to_string())
+        .and_then(|_| {
+            conn.execute(
+                "UPDATE items SET image_path = ?1, thumb_path = ?2 WHERE id = ?3",
+                params![image_path.to_string_lossy(), thumb_path.to_string_lossy(), id],
+            )
+            .map_err(|e| e.to_string())
+        });
+    if let Err(e) = written {
+        applog::error(&format!("clipboard: could not save the image files: {e}"));
+        let _ = conn.execute("DELETE FROM items WHERE id = ?1", params![id]);
+        let _ = fs::remove_file(&image_path);
+        let _ = fs::remove_file(&thumb_path);
+        return false;
+    }
+    applog::info(&format!("clipboard: recorded image {width}x{height} ({} KB)", png.len() / 1024));
+    true
+}
+
+/// Called by the watcher with a new copy.
+fn on_copy(app: &AppHandle, copied: Copied) {
+    let state = app.state::<Clipboard>();
+    let changed = match copied {
+        Copied::Text(text) => {
+            {
+                let mut skip = state.skip_hash.lock().unwrap();
+                if *skip == Some(hash(&text)) {
+                    *skip = None;
+                    applog::info("clipboard: skipped our own copy");
+                    return;
+                }
+            }
+            record_text(&state.db.lock().unwrap(), &text)
+        }
+        Copied::Image(image) => record_image(&state, &image),
+        Copied::Files(paths) => record_files(&state.db.lock().unwrap(), &paths),
+    };
     if changed {
         let _ = app.emit(CHANGED_EVENT, ());
     }
+}
+
+/// Reads the change counter while holding the "own write" marker (so a write in progress in
+/// clipboard_copy finishes first) and tells whether this change is HL Desk's own write.
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+fn own_change_check(state: &Clipboard, counter: impl FnOnce() -> i64) -> (i64, bool) {
+    let mut own = state.own_change.lock().unwrap();
+    let count = counter();
+    if *own == Some(count) {
+        *own = None;
+        *state.skip_hash.lock().unwrap() = None;
+        return (count, true);
+    }
+    (count, false)
 }
 
 /// Runs every ~500 ms on the watcher thread; every minute it also deletes expired items.
@@ -137,7 +488,8 @@ fn cleanup_if_due(app: &AppHandle, last: &mut Instant) {
         return;
     }
     *last = Instant::now();
-    let deleted = delete_expired(&app.state::<Clipboard>().db.lock().unwrap());
+    let state = app.state::<Clipboard>();
+    let deleted = delete_expired(&state.db.lock().unwrap(), &state.images);
     if deleted > 0 {
         let _ = app.emit(CHANGED_EVENT, ());
     }
@@ -151,36 +503,172 @@ fn watch(app: AppHandle) {
     use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
 
     const SKIP_TYPES: [&str; 2] = ["org.nspasteboard.ConcealedType", "org.nspasteboard.TransientType"];
+    const IMAGE_TYPES: [&str; 2] = ["public.png", "public.tiff"];
 
-    let mut last_count = NSPasteboard::generalPasteboard().changeCount();
+    let mut last_count = NSPasteboard::generalPasteboard().changeCount() as i64;
     let mut last_cleanup = Instant::now();
     loop {
         thread::sleep(Duration::from_millis(500));
         cleanup_if_due(&app, &mut last_cleanup);
 
-        let text = autoreleasepool(|_| {
+        let state = app.state::<Clipboard>();
+        let copied = autoreleasepool(|_| {
             let pasteboard = NSPasteboard::generalPasteboard();
-            let count = pasteboard.changeCount();
-            if count == last_count {
+            if pasteboard.changeCount() as i64 == last_count {
                 return None;
             }
+            let (count, own) = own_change_check(&state, || pasteboard.changeCount() as i64);
             last_count = count;
-            let types = pasteboard.types().map(|t| t.to_vec()).unwrap_or_default();
-            if types.iter().any(|t| SKIP_TYPES.contains(&t.to_string().as_str())) {
+            if own {
+                applog::info("clipboard: skipped our own copy");
                 return None;
+            }
+            let types: Vec<String> =
+                pasteboard.types().map(|t| t.to_vec().iter().map(|s| s.to_string()).collect()).unwrap_or_default();
+            if types.iter().any(|t| SKIP_TYPES.contains(&t.as_str())) {
+                applog::info("clipboard: skipped a private copy");
+                return None;
+            }
+            if types.iter().any(|t| t == mac::FILE_URL) {
+                let files = mac::read_files(&pasteboard);
+                if !files.is_empty() {
+                    return Some(Copied::Files(files));
+                }
             }
             // SAFETY: NSPasteboardTypeString is a constant NSString exported by AppKit.
             let string_type = unsafe { NSPasteboardTypeString };
-            pasteboard.stringForType(string_type).map(|s| s.to_string())
+            if let Some(text) = pasteboard.stringForType(string_type) {
+                return Some(Copied::Text(text.to_string()));
+            }
+            if types.iter().any(|t| IMAGE_TYPES.contains(&t.as_str())) {
+                return match app.clipboard().read_image() {
+                    Ok(image) => Some(Copied::Image(owned(&image))),
+                    Err(e) => {
+                        applog::warn(&format!("clipboard: could not read the copied image: {e}"));
+                        None
+                    }
+                };
+            }
+            None
         });
-        if let Some(text) = text {
-            on_copy(&app, &text);
+        if let Some(copied) = copied {
+            on_copy(&app, copied);
         }
     }
 }
 
+#[cfg(target_os = "macos")]
+mod mac {
+    use objc2::{rc::Retained, runtime::ProtocolObject};
+    use objc2_app_kit::{NSPasteboard, NSPasteboardItem, NSPasteboardWriting};
+    use objc2_foundation::{NSArray, NSString, NSURL};
+
+    pub const FILE_URL: &str = "public.file-url";
+
+    /// The paths of the copied files (one pasteboard item each).
+    pub fn read_files(pasteboard: &NSPasteboard) -> Vec<String> {
+        let file_type = NSString::from_str(FILE_URL);
+        let Some(items) = pasteboard.pasteboardItems() else { return Vec::new() };
+        items
+            .to_vec()
+            .iter()
+            .filter_map(|item| {
+                let url_string = item.stringForType(&file_type)?;
+                let url = NSURL::URLWithString(&url_string)?;
+                // Finder hands over file reference URLs (file:///.file/id=...): make them paths.
+                let url = url.filePathURL().unwrap_or(url);
+                url.path().map(|p| p.to_string())
+            })
+            .collect()
+    }
+
+    /// Puts the files on the pasteboard as file URLs (what Finder does), so they paste into
+    /// Finder or a chat. Returns the change count after the write.
+    pub fn write_files(paths: &[String]) -> Result<i64, String> {
+        objc2::rc::autoreleasepool(|_| {
+            let file_type = NSString::from_str(FILE_URL);
+            let items: Vec<Retained<ProtocolObject<dyn NSPasteboardWriting>>> = paths
+                .iter()
+                .filter_map(|p| {
+                    let url = NSURL::fileURLWithPath(&NSString::from_str(p)).absoluteString()?;
+                    let item = NSPasteboardItem::new();
+                    item.setString_forType(&url, &file_type);
+                    Some(ProtocolObject::from_retained(item))
+                })
+                .collect();
+            let pasteboard = NSPasteboard::generalPasteboard();
+            pasteboard.clearContents();
+            if !pasteboard.writeObjects(&NSArray::from_retained_slice(&items)) {
+                return Err("macOS did not accept the files".to_string());
+            }
+            Ok(pasteboard.changeCount() as i64)
+        })
+    }
+
+    pub fn change_count() -> i64 {
+        objc2::rc::autoreleasepool(|_| NSPasteboard::generalPasteboard().changeCount() as i64)
+    }
+}
+
+/// Windows: watch the clipboard sequence number (no clipboard access while nothing changes).
+#[cfg(windows)]
+fn watch(app: AppHandle) {
+    let mut last_seq = win::seq();
+    let mut last_cleanup = Instant::now();
+    loop {
+        thread::sleep(Duration::from_millis(500));
+        cleanup_if_due(&app, &mut last_cleanup);
+        if win::seq() == last_seq {
+            continue;
+        }
+        // The writer may still be adding formats: give it a moment.
+        thread::sleep(Duration::from_millis(300));
+        let state = app.state::<Clipboard>();
+        let (seq, own) = own_change_check(&state, win::seq);
+        if own {
+            last_seq = seq;
+            applog::info("clipboard: skipped our own copy");
+            continue;
+        }
+        match win::is_private_copy() {
+            None => continue, // clipboard busy: look again on the next tick
+            Some(true) => {
+                last_seq = seq;
+                applog::info("clipboard: skipped a private copy");
+                continue;
+            }
+            Some(false) => {}
+        }
+        let copied = if win::has(win::CF_HDROP) {
+            match win::read_files() {
+                Some(files) => Copied::Files(files),
+                None => continue,
+            }
+        } else if win::has(win::CF_UNICODETEXT) {
+            match app.clipboard().read_text() {
+                Ok(text) => Copied::Text(text),
+                Err(_) => continue,
+            }
+        } else if win::has_image() {
+            last_seq = seq;
+            match app.clipboard().read_image() {
+                Ok(image) => Copied::Image(owned(&image)),
+                Err(e) => {
+                    applog::warn(&format!("clipboard: could not read the copied image: {e}"));
+                    continue;
+                }
+            }
+        } else {
+            last_seq = seq;
+            continue;
+        };
+        last_seq = seq;
+        on_copy(&app, copied);
+    }
+}
+
 /// Other systems: read the clipboard text and compare its hash with the last one seen.
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn watch(app: AppHandle) {
     let mut last_hash = app.clipboard().read_text().map(|t| hash(&t)).ok();
     let mut last_cleanup = Instant::now();
@@ -191,77 +679,248 @@ fn watch(app: AppHandle) {
         let Ok(text) = app.clipboard().read_text() else { continue };
         let h = hash(&text);
         if last_hash != Some(h) {
-            #[cfg(windows)]
-            match is_private_copy() {
-                None => continue, // clipboard busy: look again on the next tick
-                Some(true) => {
-                    last_hash = Some(h);
-                    continue;
-                }
-                Some(false) => {}
-            }
             last_hash = Some(h);
-            on_copy(&app, &text);
+            on_copy(&app, Copied::Text(text));
         }
     }
 }
 
-/// Windows: true when the copy is marked private, the way password managers and Windows itself
-/// do it: an "ExcludeClipboardContentFromMonitorProcessing" or "Clipboard Viewer Ignore" format,
-/// or "CanIncludeInClipboardHistory" set to 0. None when the clipboard could not be opened.
 #[cfg(windows)]
-fn is_private_copy() -> Option<bool> {
-    use windows_sys::Win32::System::DataExchange::{
-        CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
-        RegisterClipboardFormatW,
-    };
-    use windows_sys::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
+mod win {
+    use std::ffi::c_void;
+    use std::{thread, time::Duration};
 
-    fn format(name: &str) -> u32 {
+    use windows_sys::Win32::Foundation::GlobalFree;
+    use windows_sys::Win32::System::DataExchange::{
+        CloseClipboard, EmptyClipboard, GetClipboardData, GetClipboardSequenceNumber,
+        IsClipboardFormatAvailable, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
+    };
+    use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE};
+    use windows_sys::Win32::UI::Shell::DragQueryFileW;
+
+    pub const CF_UNICODETEXT: u32 = 13;
+    pub const CF_HDROP: u32 = 15;
+    const CF_DIB: u32 = 8;
+    /// CF_BITMAP, CF_DIB, CF_DIBV5.
+    const IMAGE_FORMATS: [u32; 3] = [2, 8, 17];
+
+    pub fn seq() -> i64 {
+        // SAFETY: GetClipboardSequenceNumber only reads a counter; it needs no open clipboard.
+        unsafe { GetClipboardSequenceNumber() as i64 }
+    }
+
+    pub fn format(name: &str) -> u32 {
         let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
         // SAFETY: `wide` is a NUL-terminated UTF-16 string that outlives the call.
         unsafe { RegisterClipboardFormatW(wide.as_ptr()) }
     }
-    // SAFETY: IsClipboardFormatAvailable only reads the clipboard's format list.
-    let present = |f: u32| f != 0 && unsafe { IsClipboardFormatAvailable(f) } != 0;
 
-    if present(format("ExcludeClipboardContentFromMonitorProcessing"))
-        || present(format("Clipboard Viewer Ignore"))
-    {
-        return Some(true);
+    pub fn has(f: u32) -> bool {
+        // SAFETY: IsClipboardFormatAvailable only reads the clipboard's format list.
+        f != 0 && unsafe { IsClipboardFormatAvailable(f) } != 0
     }
-    let history = format("CanIncludeInClipboardHistory");
-    if !present(history) {
-        return Some(false);
+
+    pub fn has_image() -> bool {
+        IMAGE_FORMATS.iter().any(|&f| has(f)) || has(format("PNG"))
     }
-    // The value is a DWORD; 0 means "keep out of clipboard history".
-    // SAFETY: the clipboard is opened (no owner window) and closed again on every path; the
-    // handle from GetClipboardData is only read while locked and while the clipboard is open.
-    unsafe {
-        if OpenClipboard(0 as _) == 0 {
+
+    /// Opens the clipboard, trying for about 200 ms if another app has it open.
+    fn open(owner: *mut c_void) -> bool {
+        for _ in 0..10 {
+            // SAFETY: OpenClipboard takes a window handle or null; the caller closes it again.
+            if unsafe { OpenClipboard(owner as _) } != 0 {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        false
+    }
+
+    /// True when the copy is marked private, the way password managers and Windows itself do
+    /// it: an "ExcludeClipboardContentFromMonitorProcessing" or "Clipboard Viewer Ignore"
+    /// format, or "CanIncludeInClipboardHistory" set to 0. None when the clipboard could not
+    /// be opened.
+    pub fn is_private_copy() -> Option<bool> {
+        if has(format("ExcludeClipboardContentFromMonitorProcessing")) || has(format("Clipboard Viewer Ignore")) {
+            return Some(true);
+        }
+        let history = format("CanIncludeInClipboardHistory");
+        if !has(history) {
+            return Some(false);
+        }
+        // The value is a DWORD; 0 means "keep out of clipboard history".
+        // SAFETY: the clipboard is opened (no owner window) and closed again on every path; the
+        // handle from GetClipboardData is only read while locked and while the clipboard is open.
+        unsafe {
+            if OpenClipboard(0 as _) == 0 {
+                return None;
+            }
+            let mut private = false;
+            let data = GetClipboardData(history);
+            if data as usize != 0 {
+                let value = GlobalLock(data as _) as *const u32;
+                if !value.is_null() {
+                    if GlobalSize(data as _) >= 4 {
+                        private = value.read_unaligned() == 0;
+                    }
+                    GlobalUnlock(data as _);
+                }
+            }
+            CloseClipboard();
+            Some(private)
+        }
+    }
+
+    /// The paths in CF_HDROP (Explorer's copied files). None when the clipboard is busy.
+    pub fn read_files() -> Option<Vec<String>> {
+        if !open(std::ptr::null_mut()) {
             return None;
         }
-        let mut private = false;
-        let data = GetClipboardData(history);
-        if data as usize != 0 {
-            let value = GlobalLock(data as _) as *const u32;
-            if !value.is_null() {
-                if GlobalSize(data as _) >= 4 {
-                    private = value.read_unaligned() == 0;
+        let mut files = Vec::new();
+        // SAFETY: the clipboard is open; the CF_HDROP handle is only used until CloseClipboard,
+        // and every buffer passed to DragQueryFileW is as long as the length given with it.
+        unsafe {
+            let data = GetClipboardData(CF_HDROP);
+            if data as usize != 0 {
+                let count = DragQueryFileW(data as _, u32::MAX, std::ptr::null_mut(), 0);
+                for i in 0..count {
+                    let len = DragQueryFileW(data as _, i, std::ptr::null_mut(), 0);
+                    let mut buf = vec![0u16; len as usize + 1];
+                    let got = DragQueryFileW(data as _, i, buf.as_mut_ptr(), buf.len() as u32) as usize;
+                    if got > 0 {
+                        files.push(String::from_utf16_lossy(&buf[..got.min(len as usize)]));
+                    }
                 }
-                GlobalUnlock(data as _);
+            }
+            CloseClipboard();
+        }
+        Some(files)
+    }
+
+    /// Replaces the clipboard with the given formats. `owner` is HL Desk's window, so the
+    /// device-screenshot watcher (screenshot/watch.rs) sees our process as the owner and does
+    /// not offer the image as a new screenshot. Returns the sequence number after the write.
+    pub fn write(owner: *mut c_void, formats: &[(u32, Vec<u8>)]) -> Result<i64, String> {
+        if !open(owner) {
+            return Err("The clipboard is busy. Try again.".into());
+        }
+        let mut result = Ok(());
+        // SAFETY: the clipboard is open until CloseClipboard below. Each block is allocated,
+        // filled within its size and unlocked before SetClipboardData takes it over; a block the
+        // clipboard did not take is freed here.
+        unsafe {
+            if EmptyClipboard() == 0 {
+                result = Err("Could not empty the clipboard".to_string());
+            }
+            for (format, bytes) in formats {
+                if result.is_err() {
+                    break;
+                }
+                let mem = GlobalAlloc(GMEM_MOVEABLE, bytes.len().max(1));
+                if mem.is_null() {
+                    result = Err("Out of memory".to_string());
+                    break;
+                }
+                let ptr = GlobalLock(mem) as *mut u8;
+                if ptr.is_null() {
+                    GlobalFree(mem);
+                    result = Err("Out of memory".to_string());
+                    break;
+                }
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len());
+                GlobalUnlock(mem);
+                if SetClipboardData(*format, mem as _) as usize == 0 {
+                    GlobalFree(mem);
+                    result = Err(format!("Windows did not accept clipboard format {format}"));
+                }
+            }
+            CloseClipboard();
+        }
+        result.map(|_| seq())
+    }
+
+    /// An image as CF_DIB (32-bit BGRA, bottom-up) plus the "PNG" format that keeps
+    /// transparency for apps that read it (Office, browsers, chat apps).
+    pub fn image_formats(png: &[u8], rgba: &[u8], width: u32, height: u32) -> Vec<(u32, Vec<u8>)> {
+        let (w, h) = (width as usize, height as usize);
+        let mut dib = Vec::with_capacity(40 + w * h * 4);
+        dib.extend_from_slice(&40u32.to_le_bytes()); // biSize
+        dib.extend_from_slice(&(width as i32).to_le_bytes());
+        dib.extend_from_slice(&(height as i32).to_le_bytes()); // positive: bottom-up rows
+        dib.extend_from_slice(&1u16.to_le_bytes()); // planes
+        dib.extend_from_slice(&32u16.to_le_bytes()); // bits per pixel
+        dib.extend_from_slice(&0u32.to_le_bytes()); // BI_RGB
+        dib.extend_from_slice(&((w * h * 4) as u32).to_le_bytes());
+        dib.extend_from_slice(&[0u8; 16]); // resolution, colours used, colours important
+        for row in (0..h).rev() {
+            for px in rgba[row * w * 4..(row + 1) * w * 4].chunks_exact(4) {
+                dib.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
             }
         }
-        CloseClipboard();
-        Some(private)
+        let mut formats = vec![(CF_DIB, dib)];
+        let png_format = format("PNG");
+        if png_format != 0 {
+            formats.push((png_format, png.to_vec()));
+        }
+        formats
     }
+
+    /// Files as CF_HDROP (a DROPFILES header and NUL-separated wide paths), marked as a copy
+    /// ("Preferred DropEffect" = DROPEFFECT_COPY), so they paste into a folder or a chat.
+    pub fn file_formats(paths: &[String]) -> Vec<(u32, Vec<u8>)> {
+        let mut drop = Vec::new();
+        drop.extend_from_slice(&20u32.to_le_bytes()); // pFiles: the list starts after the header
+        drop.extend_from_slice(&[0u8; 12]); // pt (x, y), fNC
+        drop.extend_from_slice(&1u32.to_le_bytes()); // fWide: UTF-16 paths
+        for path in paths {
+            for unit in path.encode_utf16().chain(Some(0)) {
+                drop.extend_from_slice(&unit.to_le_bytes());
+            }
+        }
+        drop.extend_from_slice(&0u16.to_le_bytes());
+        let mut formats = vec![(CF_HDROP, drop)];
+        let effect = format("Preferred DropEffect");
+        if effect != 0 {
+            formats.push((effect, 1u32.to_le_bytes().to_vec()));
+        }
+        formats
+    }
+}
+
+/// HL Desk's main window handle, the clipboard owner for our own writes (null if not found).
+#[cfg(windows)]
+fn owner_window(app: &AppHandle) -> *mut std::ffi::c_void {
+    app.get_webview_window("main")
+        .and_then(|w| w.hwnd().ok())
+        .map_or(std::ptr::null_mut(), |h| h.0 as _)
+}
+
+/// The clipboard change counter now, where the system has one.
+fn change_count() -> Option<i64> {
+    #[cfg(windows)]
+    return Some(win::seq());
+    #[cfg(target_os = "macos")]
+    return Some(mac::change_count());
+    #[cfg(not(any(windows, target_os = "macos")))]
+    None
 }
 
 /// Called once at start-up, after the plugins are ready.
 pub fn init(app: &AppHandle) {
     let conn = open_db(app);
-    delete_expired(&conn);
-    app.manage(Clipboard { db: Mutex::new(conn), skip_hash: Mutex::new(None) });
+    let images = app
+        .path()
+        .app_data_dir()
+        .map(|d| d.join(IMAGES_DIR))
+        .unwrap_or_else(|_| std::env::temp_dir().join("hl-desk-clipboard-images"));
+    delete_expired(&conn, &images);
+    remove_orphan_images(&conn, &images);
+    app.manage(Clipboard {
+        db: Mutex::new(conn),
+        skip_hash: Mutex::new(None),
+        own_change: Mutex::new(None),
+        images,
+    });
 
     let handle = app.clone();
     thread::spawn(move || watch(handle));
@@ -272,42 +931,129 @@ fn err(e: rusqlite::Error) -> String {
 }
 
 #[tauri::command]
-fn clipboard_list(state: State<'_, Clipboard>, query: Option<String>) -> Result<Vec<Item>, String> {
+fn clipboard_list(
+    state: State<'_, Clipboard>,
+    query: Option<String>,
+    kind: Option<String>,
+) -> Result<Vec<Item>, String> {
     let conn = state.db.lock().unwrap();
     let query = query.unwrap_or_default();
+    let kind = kind.unwrap_or_default();
     let mut stmt = conn
-        .prepare(
-            "SELECT id, text, created_at, pinned FROM items
-             WHERE ?1 = '' OR instr(lower(text), lower(?1)) > 0
+        .prepare(&format!(
+            "SELECT {COLUMNS} FROM items
+             WHERE (?1 = '' OR instr(lower(text), lower(?1)) > 0) AND (?2 = '' OR kind = ?2)
              ORDER BY pinned DESC, created_at DESC, id DESC
-             LIMIT ?2",
-        )
+             LIMIT ?3"
+        ))
         .map_err(err)?;
-    let rows = stmt
-        .query_map(params![query.trim(), LIST_LIMIT], |r| {
-            Ok(Item { id: r.get(0)?, text: r.get(1)?, created_at: r.get(2)?, pinned: r.get(3)? })
-        })
-        .map_err(err)?;
-    let items = rows.collect::<Result<Vec<_>, _>>().map_err(err);
-    items
+    let rows = stmt.query_map(params![query.trim(), kind, LIST_LIMIT], item_from_row).map_err(err)?;
+    let mut items = rows.collect::<Result<Vec<_>, _>>().map_err(err)?;
+    for item in items.iter_mut().filter(|i| i.kind == "files") {
+        item.missing = item.files.iter().filter(|p| !Path::new(p).exists()).count();
+    }
+    Ok(items)
 }
 
-/// Puts an item back on the clipboard (without recording it again). The front end shows
-/// "Copied" and then hides the window, so the user can paste into the app they came from.
+/// An image item's thumbnail (PNG bytes).
 #[tauri::command]
-fn clipboard_copy(app: AppHandle, state: State<'_, Clipboard>, id: i64) -> Result<(), String> {
-    let text: String = state
+fn clipboard_thumb(state: State<'_, Clipboard>, id: i64) -> Result<Response, String> {
+    let path: Option<String> = state
         .db
         .lock()
         .unwrap()
-        .query_row("SELECT text FROM items WHERE id = ?1", params![id], |r| r.get(0))
+        .query_row("SELECT thumb_path FROM items WHERE id = ?1", params![id], |r| r.get(0))
         .map_err(err)?;
-    *state.skip_hash.lock().unwrap() = Some(hash(&text));
-    if let Err(e) = app.clipboard().write_text(text) {
+    let path = path.ok_or("This item has no thumbnail")?;
+    fs::read(path).map(Response::new).map_err(|e| e.to_string())
+}
+
+/// Puts an item back on the clipboard (without recording it again): text as text, an image as
+/// an image, files as a file list. The front end shows "Copied" and then hides the window, so
+/// the user can paste into the app they came from.
+#[tauri::command]
+fn clipboard_copy(app: AppHandle, state: State<'_, Clipboard>, id: i64) -> Result<(), String> {
+    let item = state
+        .db
+        .lock()
+        .unwrap()
+        .query_row(&format!("SELECT {COLUMNS} FROM items WHERE id = ?1"), params![id], item_from_row)
+        .map_err(err)?;
+    // Held during the write, so the watcher cannot look at this change before it is marked.
+    let mut own = state.own_change.lock().unwrap();
+    let result = match item.kind.as_str() {
+        "image" => copy_image(&app, &item),
+        "files" => copy_files(&app, &item),
+        _ => copy_text(&app, &state, &item.text),
+    };
+    match &result {
+        Ok(count) => {
+            *own = *count;
+            applog::info(&format!("clipboard: copied {} item back", item.kind));
+        }
+        Err(e) => applog::warn(&format!("clipboard: could not copy {} item back: {e}", item.kind)),
+    }
+    result.map(|_| ())
+}
+
+fn copy_text(app: &AppHandle, state: &Clipboard, text: &str) -> Result<Option<i64>, String> {
+    *state.skip_hash.lock().unwrap() = Some(hash(text));
+    if let Err(e) = app.clipboard().write_text(text.to_string()) {
         *state.skip_hash.lock().unwrap() = None;
         return Err(e.to_string());
     }
-    Ok(())
+    Ok(change_count())
+}
+
+fn copy_image(app: &AppHandle, item: &Item) -> Result<Option<i64>, String> {
+    let path = item.image_path.as_deref().ok_or("The image file is missing")?;
+    let png = fs::read(path).map_err(|e| format!("The image file is missing ({e})"))?;
+    let rgba = xcap::image::load_from_memory_with_format(&png, ImageFormat::Png)
+        .map_err(|e| format!("The image file cannot be read ({e})"))?
+        .to_rgba8();
+    let (width, height) = rgba.dimensions();
+    #[cfg(windows)]
+    {
+        win::write(owner_window(app), &win::image_formats(&png, rgba.as_raw(), width, height)).map(Some)
+    }
+    #[cfg(not(windows))]
+    {
+        app.clipboard()
+            .write_image(&Image::new(rgba.as_raw(), width, height))
+            .map_err(|e| e.to_string())?;
+        Ok(change_count())
+    }
+}
+
+/// Puts back the files that still exist; fails if none does.
+fn copy_files(app: &AppHandle, item: &Item) -> Result<Option<i64>, String> {
+    let existing: Vec<String> = item.files.iter().filter(|p| Path::new(p).exists()).cloned().collect();
+    if existing.is_empty() {
+        return Err(if item.files.len() == 1 {
+            "The file is no longer there".into()
+        } else {
+            "The files are no longer there".into()
+        });
+    }
+    if existing.len() < item.files.len() {
+        applog::info(&format!(
+            "clipboard: {} of {} file(s) missing, copying the rest",
+            item.files.len() - existing.len(),
+            item.files.len()
+        ));
+    }
+    #[cfg(windows)]
+    return win::write(owner_window(app), &win::file_formats(&existing)).map(Some);
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app;
+        return mac::write_files(&existing).map(Some);
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        let _ = app;
+        Err("Copying files back is not supported on this system".into())
+    }
 }
 
 #[tauri::command]
@@ -317,17 +1063,19 @@ fn clipboard_pin(state: State<'_, Clipboard>, id: i64, pinned: bool) -> Result<(
     Ok(())
 }
 
+/// Called when a delete's undo time is over: removes the row and its image files.
 #[tauri::command]
 fn clipboard_delete(state: State<'_, Clipboard>, id: i64) -> Result<(), String> {
     let conn = state.db.lock().unwrap();
-    conn.execute("DELETE FROM items WHERE id = ?1", params![id]).map_err(err)?;
+    delete_where(&conn, &state.images, "id = ?1", params![id]).map_err(err)?;
     Ok(())
 }
 
 #[tauri::command]
 fn clipboard_clear_unpinned(state: State<'_, Clipboard>) -> Result<(), String> {
     let conn = state.db.lock().unwrap();
-    conn.execute("DELETE FROM items WHERE pinned = 0", []).map_err(err)?;
+    let deleted = delete_where(&conn, &state.images, "pinned = 0", params![]).map_err(err)?;
+    applog::info(&format!("clipboard: cleared {deleted} unpinned item(s)"));
     Ok(())
 }
 
@@ -352,7 +1100,8 @@ fn store_keep_hours(conn: &Connection, hours: i64) -> rusqlite::Result<usize> {
 }
 
 /// Sets the keep time and deletes the unpinned items it no longer covers. Returns those items,
-/// so the front end can offer "N older items removed · Undo" (clipboard_undo_keep).
+/// so the front end can offer "N older items removed · Undo" (clipboard_undo_keep). Their image
+/// files stay until the undo time is over (clipboard_drop_files).
 #[tauri::command]
 fn clipboard_set_keep_hours(state: State<'_, Clipboard>, hours: i64) -> Result<Vec<Item>, String> {
     check_hours(hours)?;
@@ -363,27 +1112,35 @@ fn clipboard_set_keep_hours(state: State<'_, Clipboard>, hours: i64) -> Result<V
     let cutoff = now() - hours * 3600;
     let removed = {
         let mut stmt = tx
-            .prepare(
-                "SELECT id, text, created_at, pinned FROM items
-                 WHERE pinned = 0 AND created_at < ?1 ORDER BY created_at, id",
-            )
+            .prepare(&format!(
+                "SELECT {COLUMNS} FROM items WHERE pinned = 0 AND created_at < ?1 ORDER BY created_at, id"
+            ))
             .map_err(err)?;
-        let rows = stmt
-            .query_map(params![cutoff], |r| {
-                Ok(Item { id: r.get(0)?, text: r.get(1)?, created_at: r.get(2)?, pinned: r.get(3)? })
-            })
-            .map_err(err)?;
+        let rows = stmt.query_map(params![cutoff], item_from_row).map_err(err)?;
         let removed = rows.collect::<Result<Vec<_>, _>>().map_err(err)?;
         removed
     };
     tx.execute("DELETE FROM items WHERE pinned = 0 AND created_at < ?1", params![cutoff])
         .map_err(err)?;
     tx.commit().map_err(err)?;
-    crate::applog::info(&format!(
+    applog::info(&format!(
         "clipboard: keep changed from {before} to {hours} hours, {} older item(s) removed",
         removed.len()
     ));
     Ok(removed)
+}
+
+/// The Keep change's undo time is over: deletes the image files of the items it removed
+/// (only files in clipboard-images that no row uses).
+#[tauri::command]
+fn clipboard_drop_files(state: State<'_, Clipboard>, items: Vec<Item>) -> Result<(), String> {
+    let conn = state.db.lock().unwrap();
+    let paths: Vec<Option<String>> = items.into_iter().flat_map(|i| [i.image_path, i.thumb_path]).collect();
+    let removed = remove_image_files(&conn, &state.images, &paths);
+    if removed > 0 {
+        applog::info(&format!("clipboard: deleted {removed} image file(s) after the keep change"));
+    }
+    Ok(())
 }
 
 /// Undo for clipboard_set_keep_hours: puts the old keep time back first (so the minute cleanup
@@ -393,13 +1150,27 @@ fn clipboard_set_keep_hours(state: State<'_, Clipboard>, hours: i64) -> Result<V
 fn clipboard_undo_keep(state: State<'_, Clipboard>, hours: i64, items: Vec<Item>) -> Result<(), String> {
     let result = undo_keep(&state, hours, &items);
     match &result {
-        Ok(restored) => crate::applog::info(&format!(
+        Ok(restored) => applog::info(&format!(
             "clipboard: keep undo: back to {hours} hours, {restored} of {} item(s) restored",
             items.len()
         )),
-        Err(e) => crate::applog::error(&format!("clipboard: keep undo failed: {e}")),
+        Err(e) => applog::error(&format!("clipboard: keep undo failed: {e}")),
     }
     result.map(|_| ())
+}
+
+/// Whether an item sent back by the page may be stored again: sane text, image files inside
+/// clipboard-images that still exist, or a non-empty file list.
+fn restorable(item: &Item, images: &Path) -> bool {
+    let own_file = |p: &Option<String>| {
+        p.as_deref().is_some_and(|p| Path::new(p).parent() == Some(images) && Path::new(p).is_file())
+    };
+    match item.kind.as_str() {
+        "text" => !item.text.trim().is_empty() && item.text.len() <= MAX_ITEM_BYTES,
+        "image" => own_file(&item.image_path) && own_file(&item.thumb_path),
+        "files" => !item.files.is_empty(),
+        _ => false,
+    }
 }
 
 /// Returns how many items were put back.
@@ -409,17 +1180,36 @@ fn undo_keep(state: &Clipboard, hours: i64, items: &[Item]) -> Result<usize, Str
     let tx = conn.unchecked_transaction().map_err(err)?;
     store_keep_hours(&tx, hours).map_err(err)?;
     let mut restored = 0;
-    for item in items.iter().filter(|i| !i.text.trim().is_empty() && i.text.len() <= MAX_ITEM_BYTES) {
+    for item in items.iter().filter(|i| restorable(i, &state.images)) {
+        let files_json =
+            if item.kind == "files" { serde_json::to_string(&item.files).ok() } else { None };
+        let values: [&dyn ToSql; 9] = [
+            &item.kind,
+            &item.text,
+            &item.image_path,
+            &item.thumb_path,
+            &item.width,
+            &item.height,
+            &files_json,
+            &item.created_at,
+            &item.pinned,
+        ];
+        let mut with_id = values.to_vec();
+        with_id.push(&item.id);
         let same_id = tx
             .execute(
-                "INSERT OR IGNORE INTO items (id, text, created_at, pinned) VALUES (?1, ?2, ?3, ?4)",
-                params![item.id, item.text, item.created_at, item.pinned],
+                "INSERT OR IGNORE INTO items
+                 (kind, text, image_path, thumb_path, width, height, files_json, created_at, pinned, id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                &with_id[..],
             )
             .map_err(err)?;
         if same_id == 0 {
             tx.execute(
-                "INSERT INTO items (text, created_at, pinned) VALUES (?1, ?2, ?3)",
-                params![item.text, item.created_at, item.pinned],
+                "INSERT INTO items
+                 (kind, text, image_path, thumb_path, width, height, files_json, created_at, pinned)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                &values[..],
             )
             .map_err(err)?;
         }
@@ -434,12 +1224,14 @@ fn undo_keep(state: &Clipboard, hours: i64, items: &[Item]) -> Result<usize, Str
 pub fn commands() -> impl Fn(Invoke) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
         clipboard_list,
+        clipboard_thumb,
         clipboard_copy,
         clipboard_pin,
         clipboard_delete,
         clipboard_clear_unpinned,
         clipboard_get_settings,
         clipboard_set_keep_hours,
+        clipboard_drop_files,
         clipboard_undo_keep
     ]
 }

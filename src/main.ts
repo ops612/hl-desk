@@ -79,6 +79,7 @@ const shortcuts: [string, string][] = [
   ["Editor: number, pen, crop, undo", `N, P, C, ${mod}Z`],
   ["Pin a clipboard item", `${mod}P`],
   ["New note", `${mod}N`],
+  ["Dictate into a note (stop: Esc)", `${mod}${isMac ? "⇧" : "Shift+"}D`],
   ["Move in a list, open", "↑ ↓, Enter"],
   ["Close", "Esc"],
 ];

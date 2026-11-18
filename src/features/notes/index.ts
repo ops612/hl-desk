@@ -34,7 +34,18 @@ const api = {
   create: () => invoke<Note>("notes_create"),
   save: (id: number, body: string) => invoke<number>("notes_save", { id, body }),
   remove: (id: number) => invoke<void>("notes_delete", { id }),
+  dictationStatus: () => invoke<{ available: boolean; off: boolean }>("notes_dictation_status"),
+  dictate: () => invoke<boolean>("notes_dictate"),
+  dictationStop: () => invoke<void>("notes_dictation_stop"),
 };
+
+/** Same as the popover's blur guard in notes.rs: dictation may run this long after the click. */
+const DICTATION_MS = 60_000;
+const DICTATION_SETTINGS_URL = "x-apple.systempreferences:com.apple.Keyboard-Settings.extension";
+
+function log(level: "info" | "warn" | "error", message: string): void {
+  invoke("app_log", { level, message: `notes: ${message}` }).catch(() => {});
+}
 
 /** "Today 4:25 pm", "Yesterday", "12 Nov" (with the year when it is not this year). */
 function editedLabel(ms: number, now = new Date()): string {
@@ -54,6 +65,10 @@ const ICON_BACK =
   '<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3L5 8l5 5"/></svg>';
 const ICON_TRASH =
   '<svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4h11M6.5 4V2.5h3V4M4 4l.7 9.5h6.6L12 4M6.8 6.5v4.5M9.2 6.5v4.5"/></svg>';
+// Microphone, from Feather (MIT).
+const ICON_MIC =
+  '<svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8"/></svg>';
+const dictateKeys = isMac ? "⌘⇧D" : "Ctrl+Shift+D";
 
 export function mount(el: HTMLElement): void {
   el.innerHTML = `
@@ -74,12 +89,18 @@ export function mount(el: HTMLElement): void {
       <div class="toolbar">
         <button class="icon-btn notes-back" type="button" aria-label="Back to notes" title="Back to notes">${ICON_BACK}</button>
         <span class="hint notes-status" role="status"></span>
+        <button class="icon-btn notes-mic" type="button" aria-pressed="false" aria-label="Dictate"
+          title="Dictate (${dictateKeys})">${ICON_MIC}</button>
         <button class="icon-btn notes-trash" type="button" aria-label="Delete note" title="Delete note">${ICON_TRASH}</button>
       </div>
       <textarea class="field notes-body" aria-label="Note"
         placeholder="Start typing. The first line becomes the title."></textarea>
     </div>
-    <div class="footer"><span class="notes-count">Saved automatically</span></div>`;
+    <div class="footer">
+      <span class="notes-count">Saved automatically</span>
+      <span class="notes-voice" hidden></span>
+      <button class="btn notes-voice-settings" type="button" hidden>Turn on Dictation</button>
+    </div>`;
 
   const $ = <T extends HTMLElement>(sel: string) => el.querySelector<T>(sel)!;
   const listView = $(".notes-list-view");
@@ -215,6 +236,8 @@ export function mount(el: HTMLElement): void {
     search.toggleAttribute("data-autofocus", !editor);
     textarea.toggleAttribute("data-autofocus", editor);
     status.textContent = "";
+    if (!editor) stopDictation();
+    renderVoice();
   }
 
   function openEditor(next: Draft): void {
@@ -343,13 +366,115 @@ export function mount(el: HTMLElement): void {
     search.focus();
   });
 
+  // ---- Voice to text: the computer's own dictation (Rust: notes.rs notes_dictate) ----
+  // Windows: Win+H (Voice typing) types into the textarea; macOS: startDictation:. Autosave
+  // picks the text up through the input event. While it may be running (60 s, or until the mic
+  // is clicked again or Esc), the popover does not hide when it loses the focus.
+
+  const mic = $<HTMLButtonElement>(".notes-mic");
+  const voiceHint = $(".notes-voice");
+  const voiceSettings = $<HTMLButtonElement>(".notes-voice-settings");
+  /** null until notes_dictation_status answers. */
+  let voice: { available: boolean; off: boolean } | null = null;
+  let dictating = false;
+  let dictationTimer: number | undefined;
+
+  function renderVoice(): void {
+    const editor = !editorView.hidden;
+    countEl.hidden = editor;
+    voiceHint.hidden = !editor;
+    mic.hidden = voice !== null && !voice.available;
+    mic.setAttribute("aria-pressed", String(dictating));
+    mic.classList.toggle("active", dictating);
+    mic.title = dictating ? "Stop dictation (Esc)" : `Dictate (${dictateKeys})`;
+    const off = voice?.off === true && isMac;
+    voiceSettings.hidden = !editor || !off;
+    if (voice && !voice.available) {
+      voiceHint.textContent = isMac ? "Dictation isn't available on this Mac" : "Voice typing isn't available on this PC";
+    } else if (off) {
+      voiceHint.textContent = "Dictation is off on this Mac";
+    } else if (dictating) {
+      voiceHint.textContent = "Listening… click the mic or press Esc to stop";
+    } else {
+      voiceHint.textContent = "Speak in English, 中文 or 廣東話 (uses your computer's dictation)";
+    }
+    voiceHint.title = voiceHint.textContent;
+  }
+
+  function stopDictation(): void {
+    clearTimeout(dictationTimer);
+    if (!dictating) return;
+    dictating = false;
+    log("info", "dictation stopped");
+    api.dictationStop().catch(() => {});
+    renderVoice();
+  }
+
+  async function startDictation(): Promise<void> {
+    if (!draft || editorView.hidden || voice?.available === false) return;
+    // Focus the note at the cursor (the click on the mic must not move it).
+    const { selectionStart, selectionEnd } = textarea;
+    textarea.focus();
+    textarea.setSelectionRange(selectionStart, selectionEnd);
+    dictating = true;
+    renderVoice();
+    log("info", "dictation requested");
+    clearTimeout(dictationTimer);
+    dictationTimer = window.setTimeout(stopDictation, DICTATION_MS);
+    try {
+      const started = await api.dictate();
+      textarea.focus();
+      if (!started) {
+        // macOS: nothing took startDictation:, so dictation is most likely off.
+        voice = { available: true, off: true };
+        log("warn", "dictation did not start (off in System Settings?)");
+        stopDictation();
+      }
+    } catch (e) {
+      log("error", `dictation failed: ${e}`);
+      status.textContent = `Could not start dictation: ${e}`;
+      stopDictation();
+    }
+    renderVoice();
+  }
+
+  function toggleDictation(): void {
+    if (dictating) stopDictation();
+    else void startDictation();
+  }
+
+  // Keep the textarea's focus and cursor when the mic is clicked.
+  mic.addEventListener("mousedown", (e) => e.preventDefault());
+  mic.addEventListener("click", toggleDictation);
+  voiceSettings.addEventListener("click", () => {
+    log("info", "open Keyboard settings (Turn on Dictation)");
+    invoke("shell_open_url", { url: DICTATION_SETTINGS_URL }).catch((e) => log("error", `open settings: ${e}`));
+  });
+  api
+    .dictationStatus()
+    .then((s) => {
+      voice = s;
+      if (!s.available) log("warn", isMac ? "dictation not available" : "voice typing not available on this PC");
+      renderVoice();
+    })
+    .catch(() => {});
+  renderVoice();
+
   // Cmd+N (Ctrl+N on Windows) makes a new note while the Notes tab is showing.
+  // Cmd+Shift+D (Ctrl+Shift+D) starts or stops dictation while a note is open; Esc stops it.
   document.addEventListener("keydown", (e) => {
     if (el.hidden || e.defaultPrevented) return;
     const cmd = isMac ? e.metaKey : e.ctrlKey;
     if (cmd && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "n") {
       e.preventDefault();
       void newNote();
+    } else if (cmd && e.shiftKey && !e.altKey && e.key.toLowerCase() === "d" && !editorView.hidden) {
+      e.preventDefault();
+      toggleDictation();
+    } else if (e.key === "Escape" && dictating) {
+      // The first Esc stops dictation; the next one closes the window (main.ts).
+      e.preventDefault();
+      stopDictation();
     }
   });
 

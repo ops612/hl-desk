@@ -4,6 +4,7 @@
 //! so the front end only ever sends the body.
 
 use std::error::Error;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -179,8 +180,205 @@ fn notes_delete(store: State<'_, Store>, id: i64) -> Result<(), String> {
     })
 }
 
+// ---- Voice to text: the computer's own dictation (no cloud API, no model in the app) ----
+//
+// Windows: Win+H opens Voice typing, which types into the focused field (the note's textarea).
+// macOS: the standard startDictation: action, sent through NSApplication with the textarea focused.
+// The voice typing bar takes the focus on Windows, so the popover does not hide on blur while
+// dictation may be running (lib.rs asks keep_open()).
+
+/// How long the popover stays open after the mic is clicked, unless it is stopped first.
+const DICTATION_KEEP_OPEN_MS: i64 = 60_000;
+/// Until when (Unix ms) the popover ignores focus loss. 0: not dictating.
+static DICTATING_UNTIL: AtomicI64 = AtomicI64::new(0);
+
+/// lib.rs: true while dictation may be running (the main window then stays open on blur).
+pub(crate) fn keep_open() -> bool {
+    now_ms() < DICTATING_UNTIL.load(Ordering::SeqCst)
+}
+
+/// What this computer offers. off: macOS dictation looks turned off in System Settings.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Dictation {
+    available: bool,
+    off: bool,
+}
+
+/// Windows 10 1709 (build 16299) is the first with dictation on Win+H.
+#[cfg(target_os = "windows")]
+const WIN_DICTATION_BUILD: u32 = 16299;
+
+/// The real Windows build number (GetVersionEx is capped by the manifest; RtlGetVersion is not).
+#[cfg(target_os = "windows")]
+fn windows_build() -> u32 {
+    #[repr(C)]
+    struct OsVersionInfoW {
+        size: u32,
+        major: u32,
+        minor: u32,
+        build: u32,
+        platform: u32,
+        csd: [u16; 128],
+    }
+    #[link(name = "ntdll")]
+    extern "system" {
+        fn RtlGetVersion(info: *mut OsVersionInfoW) -> i32;
+    }
+    let mut info = OsVersionInfoW {
+        size: std::mem::size_of::<OsVersionInfoW>() as u32,
+        major: 0,
+        minor: 0,
+        build: 0,
+        platform: 0,
+        csd: [0; 128],
+    };
+    // SAFETY: info is a valid OSVERSIONINFOW with its size set.
+    if unsafe { RtlGetVersion(&mut info) } == 0 {
+        info.build
+    } else {
+        0
+    }
+}
+
+/// macOS: Keyboard > Dictation writes AppleDictationAutoEnable = 1 when it is on.
+#[cfg(target_os = "macos")]
+fn mac_dictation_on() -> bool {
+    std::process::Command::new("defaults")
+        .args(["read", "com.apple.HIToolbox", "AppleDictationAutoEnable"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "1")
+        .unwrap_or(false)
+}
+
+#[tauri::command]
+fn notes_dictation_status() -> Dictation {
+    #[cfg(target_os = "windows")]
+    {
+        let build = windows_build();
+        let available = build >= WIN_DICTATION_BUILD;
+        if !available {
+            crate::applog::warn(&format!(
+                "notes: voice typing not available on Windows build {build}"
+            ));
+        }
+        Dictation { available, off: false }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Dictation { available: true, off: !mac_dictation_on() }
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        Dictation { available: false, off: false }
+    }
+}
+
+/// Windows: presses Win+H (Voice typing). Modifiers still held from Ctrl+Shift+D are released
+/// first, or Windows would see Ctrl+Shift+Win+H.
+#[cfg(target_os = "windows")]
+fn press_win_h() -> Result<(), String> {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
+        VK_CONTROL, VK_LWIN, VK_MENU, VK_SHIFT,
+    };
+    const VK_H: u16 = 0x48;
+    let key = |vk: u16, up: bool| INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: vk,
+                wScan: 0,
+                dwFlags: if up { KEYEVENTF_KEYUP } else { 0 },
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    let mut inputs = Vec::new();
+    for vk in [VK_CONTROL, VK_SHIFT, VK_MENU] {
+        // SAFETY: plain Win32 call with a virtual-key code.
+        if unsafe { GetAsyncKeyState(vk as i32) } < 0 {
+            inputs.push(key(vk, true));
+        }
+    }
+    inputs.extend([key(VK_LWIN, false), key(VK_H, false), key(VK_H, true), key(VK_LWIN, true)]);
+    // SAFETY: inputs is a valid slice of INPUT structs, and cbSize is their size.
+    let sent = unsafe {
+        SendInput(inputs.len() as u32, inputs.as_ptr(), std::mem::size_of::<INPUT>() as i32)
+    };
+    if sent as usize == inputs.len() {
+        Ok(())
+    } else {
+        Err(format!("SendInput sent {sent} of {} keys", inputs.len()))
+    }
+}
+
+/// macOS: sends startDictation: to the first responder (the focused textarea). Returns whether
+/// something took it.
+#[cfg(target_os = "macos")]
+fn start_mac_dictation(app: &AppHandle) -> Result<bool, String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.run_on_main_thread(move || {
+        let handled = objc2::MainThreadMarker::new().is_some_and(|mtm| {
+            let ns_app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+            // SAFETY: a standard responder action with no target and no sender.
+            unsafe { ns_app.sendAction_to_from(objc2::sel!(startDictation:), None, None) }
+        });
+        let _ = tx.send(handled);
+    })
+    .map_err(|e| e.to_string())?;
+    rx.recv_timeout(std::time::Duration::from_secs(2))
+        .map_err(|e| e.to_string())
+}
+
+/// Mic button / Ctrl+Shift+D: the page has focused the textarea at the cursor; this makes sure
+/// the window has the focus, then starts the computer's dictation. Returns false on macOS when
+/// nothing took the action (dictation is probably off).
+#[tauri::command]
+async fn notes_dictate(app: AppHandle) -> Result<bool, String> {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_focus();
+    }
+    DICTATING_UNTIL.store(now_ms() + DICTATION_KEEP_OPEN_MS, Ordering::SeqCst);
+    // Let the focus settle before the keys go out.
+    std::thread::sleep(std::time::Duration::from_millis(120));
+    #[cfg(target_os = "windows")]
+    let result = press_win_h().map(|()| true);
+    #[cfg(target_os = "macos")]
+    let result = start_mac_dictation(&app);
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let result: Result<bool, String> = Err("Dictation is not supported here.".into());
+    match &result {
+        Ok(true) => crate::applog::info("notes: dictation started"),
+        Ok(false) => crate::applog::warn("notes: startDictation: was not handled (dictation off?)"),
+        Err(e) => crate::applog::error(&format!("notes: could not start dictation: {e}")),
+    }
+    if !matches!(result, Ok(true)) {
+        DICTATING_UNTIL.store(0, Ordering::SeqCst);
+    }
+    result
+}
+
+/// Mic clicked again, Esc, or the note closed: the popover hides on blur again.
+#[tauri::command]
+fn notes_dictation_stop() {
+    if DICTATING_UNTIL.swap(0, Ordering::SeqCst) != 0 {
+        crate::applog::info("notes: dictation stopped (popover hides on blur again)");
+    }
+}
+
 /// This feature's commands. Name each one "notes_<name>" (for example "notes_list")
 /// so lib.rs routes it here, and list it in generate_handler! below.
 pub fn commands() -> impl Fn(Invoke) -> bool + Send + Sync + 'static {
-    tauri::generate_handler![notes_list, notes_get, notes_create, notes_save, notes_delete]
+    tauri::generate_handler![
+        notes_list,
+        notes_get,
+        notes_create,
+        notes_save,
+        notes_delete,
+        notes_dictation_status,
+        notes_dictate,
+        notes_dictation_stop
+    ]
 }
