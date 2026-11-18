@@ -38,7 +38,9 @@ xcap = "0.9"
 # org.nspasteboard.ConcealedType (password managers).
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSArray", "NSURL", "NSData"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSArray", "NSURL", "NSData", "NSDictionary", "NSError"] }
+# Text recognition (ocr.rs): Vision's VNRecognizeTextRequest.
+objc2-vision = "0.3"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard", "NSPasteboardItem", "NSApplication", "NSResponder"] }
 
 # Windows clipboard formats for the clipboard feature: skip copies marked private
@@ -48,6 +50,9 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["std", 
 # Storage_FileSystem: GetDriveTypeW, so copied files on a mapped network drive are not looked up.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+# Text recognition (ocr.rs): Windows.Media.Ocr (same windows version as already in Cargo.lock).
+windows = { version = "0.62", features = ["Foundation", "Foundation_Collections", "Globalization", "Graphics_Imaging", "Media_Ocr", "Storage_Streams", "System_UserProfile"] }
+windows-future = "0.3"
 
 [profile.release]
 codegen-units = 1

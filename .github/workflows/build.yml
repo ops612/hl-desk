@@ -39,6 +39,12 @@ jobs:
       - name: Compile (universal, no bundle)
         run: npm run tauri -- build --target universal-apple-darwin --no-bundle
 
+      # Rust unit tests on the runner's own architecture (after the compile, so dist/ exists).
+      # Includes a real Vision OCR run on src-tauri/tests/fixtures/ocr-sample.png.
+      - name: Unit tests
+        working-directory: src-tauri
+        run: cargo test --lib -- --nocapture
+
       - name: Upload Cargo.lock
         uses: actions/upload-artifact@v4
         with:
