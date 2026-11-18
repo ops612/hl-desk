@@ -86,3 +86,5 @@
 }
 .notes-voice-settings { flex: none; }
 .notes-voice.warn { white-space: normal; color: var(--ink); }
+/* A trouble hint wraps instead of being cut off (the settings path must stay readable). */
+.notes-voice.warn .notes-voice-text { white-space: normal; }
