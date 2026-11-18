@@ -3,3 +3,7 @@ dist/
 src-tauri/target/
 src-tauri/gen/schemas/
 .DS_Store
+
+# Spike: downloaded engine and model binaries (Mozilla, MPL-2.0), never committed
+spike/translate/models/
+spike/**/*.wasm

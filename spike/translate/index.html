@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Bergamot WASM spike</title>
+<style>
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 16px; }
+  pre { white-space: pre-wrap; background: #f4f4f4; padding: 12px; }
+</style>
+</head>
+<body>
+<h1>Bergamot WASM spike (single thread, no COOP/COEP)</h1>
+<button id="run">Run tests</button>
+<pre id="out"></pre>
+<script>
+const TESTS = [
+  ["zh-Hant-en", "貨物星期五前可以出，運費另計，請確認數量。"],
+  ["zh-Hant-en", "報價單 Q-2311，產品：膠盒 x 500，單價：HK$12.5，交貨期：7 個工作天。"],
+  ["en-zh-Hant", "Please confirm the delivery date and send the invoice by Friday."],
+  ["zh-Hans-en", "我们明天下午三点开会，请准备好样品。"],
+];
+const out = document.getElementById("out");
+const log = (s) => { out.textContent += s + "\n"; };
+const worker = new Worker("engine.worker.js");
+let seq = 0;
+const pending = new Map();
+worker.onmessage = ({ data }) => { const p = pending.get(data.id); pending.delete(data.id); data.ok ? p.res(data.result) : p.rej(Object.assign(new Error(data.error), { logs: data.logs })); };
+const call = (msg) => new Promise((res, rej) => { const id = ++seq; pending.set(id, { res, rej }); worker.postMessage({ ...msg, id }); });
+
+async function run() {
+  out.textContent = "";
+  const R = { page: { crossOriginIsolated: self.crossOriginIsolated, sab: typeof SharedArrayBuffer }, loads: {}, translations: [] };
+  window.__results = R;
+  try {
+    R.worker = await call({ cmd: "env" });
+    log("env " + JSON.stringify({ page: R.page, worker: R.worker }));
+    const manifest = await (await fetch("models/manifest.json")).json();
+    R.engine = await call({ cmd: "init" });
+    log(`engine: fetch ${R.engine.fetchMs.toFixed(0)} ms, init ${R.engine.initMs.toFixed(0)} ms, heap ${R.engine.heapMB} MB; ${R.engine.logs.join(" | ")}`);
+    for (const pair of Object.keys(manifest.pairs)) {
+      const l = await call({ cmd: "load", pair, files: manifest.pairs[pair].files });
+      R.loads[pair] = l;
+      log(`load ${pair} v${manifest.pairs[pair].version}: fetch ${l.fetchMs.toFixed(0)} ms, build ${l.buildMs.toFixed(0)} ms, heap ${l.heapMB} MB ${l.logs.join(" | ")}`);
+    }
+    for (const [pair, text] of TESTS) {
+      const first = await call({ cmd: "translate", pair, text });
+      const repeat = await call({ cmd: "translate", pair, text });
+      R.translations.push({ pair, text, out: first.text, firstMs: first.ms, repeatMs: repeat.ms, same: first.text === repeat.text, heapMB: repeat.heapMB });
+      log(`\n[${pair}] ${text}\n=> ${first.text}\nfirst ${first.ms.toFixed(0)} ms, repeat ${repeat.ms.toFixed(0)} ms, same=${first.text === repeat.text}, heap ${repeat.heapMB} MB ${first.logs.join(" | ")}`);
+    }
+    R.done = true;
+  } catch (e) {
+    R.error = String(e.message) + " " + JSON.stringify(e.logs || []);
+    log("ERROR " + R.error);
+  }
+}
+document.getElementById("run").onclick = run;
+</script>
+</body>
+</html>
