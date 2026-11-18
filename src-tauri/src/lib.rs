@@ -6,6 +6,7 @@ mod ocr;
 mod screenshot;
 mod settings;
 mod translate;
+mod voice;
 
 use std::{
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
@@ -198,6 +199,7 @@ pub fn run() {
     let ocr_commands = ocr::commands();
     let settings_commands = settings::commands();
     let translate_commands = translate::commands();
+    let voice_commands = voice::commands();
     let app_commands = applog::commands();
     let shell_commands = shell_handlers();
 
@@ -254,6 +256,8 @@ pub fn run() {
                 settings_commands(invoke)
             } else if command.starts_with("translate_") {
                 translate_commands(invoke)
+            } else if command.starts_with("voice_") {
+                voice_commands(invoke)
             } else if command.starts_with("shell_") {
                 shell_commands(invoke)
             } else {

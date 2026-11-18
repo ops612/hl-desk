@@ -7,6 +7,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import * as clipboard from "./features/clipboard";
 import * as notes from "./features/notes";
+import { mountVoiceSettings } from "./features/notes/voice-settings";
 import * as screenshot from "./features/screenshot";
 import { mountPermission } from "./features/screenshot/permission";
 import { mountCaptureSettings } from "./features/screenshot/settings";
@@ -84,6 +85,7 @@ const shortcuts: [string, string][] = [
   ["Close", "Esc"],
 ];
 mountCaptureSettings(document.getElementById("settings-capture")!);
+mountVoiceSettings(document.getElementById("settings-voice")!);
 document.getElementById("shortcuts")!.innerHTML = shortcuts
   .map(([what, keys]) => `<div><dt>${what}</dt><dd><kbd>${keys}</kbd></dd></div>`)
   .join("");

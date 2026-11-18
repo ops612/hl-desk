@@ -493,7 +493,7 @@ impl Download {
 
 static DOWNLOADS: Mutex<Vec<(Pair, std::sync::Arc<Download>)>> = Mutex::new(Vec::new());
 
-fn http_client() -> Result<reqwest::Client, String> {
+pub(crate) fn http_client() -> Result<reqwest::Client, String> {
     // reqwest is built without a TLS crypto provider (as in tauri-plugin-updater): use ring.
     if rustls::crypto::CryptoProvider::get_default().is_none() {
         let _ = rustls::crypto::ring::default_provider().install_default();
@@ -506,12 +506,13 @@ fn http_client() -> Result<reqwest::Client, String> {
         .map_err(|e| e.to_string())
 }
 
-/// Downloads one file into `<dir>/<name>.part` (continuing a partial one with a Range request),
-/// checks its size and sha256 and renames it to `<dir>/<name>`. `report(bytes of this file)`.
-async fn download_file(
+/// Downloads one file from `url` into `<dir>/<name>.part` (continuing a partial one with a Range
+/// request), checks its size and sha256 and renames it to `<dir>/<name>`. `report(bytes of this
+/// file)`. Also used by voice.rs for the whisper model.
+pub(crate) async fn download_file(
     client: &reqwest::Client,
     dir: &Path,
-    pair: Pair,
+    url: &str,
     file: &ModelFile,
     report: &(dyn Fn(u64) + Sync),
 ) -> Result<(), String> {
@@ -523,16 +524,16 @@ async fn download_file(
         have = 0;
     }
     if have < file.size {
-        // GitHub answers with a redirect to its file host; reqwest follows it and keeps Range.
-        let url = model_url(pair, file);
-        let mut request = client.get(&url);
+        // GitHub and Hugging Face answer with a redirect to their file host; reqwest follows it
+        // and keeps Range.
+        let mut request = client.get(url);
         if have > 0 {
             request = request.header(reqwest::header::RANGE, format!("bytes={have}-"));
         }
         let mut response = request.send().await.map_err(|e| format!("could not connect ({e})"))?;
         let status = response.status();
         let append = if status == reqwest::StatusCode::PARTIAL_CONTENT {
-            applog::info(&format!("translate: resuming {} at {have} bytes", file.name));
+            applog::info(&format!("download: resuming {} at {have} bytes", file.name));
             true
         } else if status.is_success() {
             have = 0;
@@ -574,11 +575,11 @@ async fn download_file(
         .map_err(|e| e.to_string())?;
     if let Err(e) = checked {
         let _ = fs::remove_file(&part);
-        applog::error(&format!("translate: {} failed its check ({e}); deleted", file.name));
+        applog::error(&format!("download: {} failed its check ({e}); deleted", file.name));
         return Err(format!("{} failed its check; try again", file.name));
     }
     fs::rename(&part, &target).map_err(|e| format!("could not save {}: {e}", file.name))?;
-    applog::info(&format!("translate: {} saved ({} bytes, sha256 ok)", file.name, file.size));
+    applog::info(&format!("download: {} saved ({} bytes, sha256 ok)", file.name, file.size));
     Ok(())
 }
 
@@ -599,7 +600,7 @@ async fn download_pair(app: &AppHandle, pair: Pair, progress: &(dyn Fn(Progress)
         let report = |bytes: u64| {
             progress(Progress { done: before + bytes, total });
         };
-        download_file(&client, &dir, pair, file, &report).await?;
+        download_file(&client, &dir, &model_url(pair, file), file, &report).await?;
         done += file.size;
     }
     progress(Progress { done: total, total });

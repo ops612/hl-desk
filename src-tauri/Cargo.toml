@@ -62,6 +62,14 @@ windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_
 # Text recognition (ocr.rs): Windows.Media.Ocr (same windows version as already in Cargo.lock).
 windows = { version = "0.62", features = ["Foundation", "Foundation_Collections", "Globalization", "Graphics_Imaging", "Media_Ocr", "Storage_Streams", "System_UserProfile"] }
 windows-future = "0.3"
+# Offline voice to text (voice.rs, Windows only): whisper.cpp built from source with cmake
+# (whisper-rs: Unlicense; whisper.cpp: MIT) and the default microphone through cpal (Apache-2.0).
+whisper-rs = "0.16"
+cpal = "0.18"
+
+[target.'cfg(windows)'.dev-dependencies]
+# Reads the voice test fixture (voice.rs tests).
+hound = "3.5"
 
 [profile.release]
 codegen-units = 1

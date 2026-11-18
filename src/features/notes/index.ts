@@ -37,6 +37,10 @@ const api = {
   dictationStatus: () => invoke<{ available: boolean; off: boolean }>("notes_dictation_status"),
   dictate: () => invoke<boolean>("notes_dictate"),
   dictationStop: (end: boolean) => invoke<void>("notes_dictation_stop", { end }),
+  // Offline voice to text (Windows, Settings switch; Rust: voice.rs).
+  voiceStatus: () => invoke<{ supported: boolean; enabled: boolean }>("voice_status"),
+  voiceStop: () => invoke<string>("voice_stop"),
+  voiceCancel: () => invoke<void>("voice_cancel"),
 };
 
 /** Same as the popover's blur guard in notes.rs: dictation may run this long after the click. */
@@ -46,6 +50,8 @@ const DICTATION_QUIET_MS = 10_000;
 const DICTATION_TROUBLE = isMac
   ? "No dictation text yet. If it didn't start, check System Settings > Keyboard > Dictation."
   : "No dictation text yet. If it didn't start, check Settings > Privacy > Speech > Online speech recognition.";
+/** Offline voice to text: recording stops by itself after this long (voice.rs stops at 120 s too). */
+const OFFLINE_MAX_MS = 120_000;
 const DICTATION_SETTINGS_URL = "x-apple.systempreferences:com.apple.Keyboard-Settings.extension";
 
 function log(level: "info" | "warn" | "error", message: string): void {
@@ -246,6 +252,7 @@ export function mount(el: HTMLElement): void {
     status.textContent = "";
     voiceTrouble = false;
     if (!editor) stopDictation();
+    else void refreshOffline();
     renderVoice();
   }
 
@@ -399,6 +406,20 @@ export function mount(el: HTMLElement): void {
   let quietTimer: number | undefined;
   /** Show the "didn't start" hint (a failed start, or no text after one). */
   let voiceTrouble = false;
+  /** Settings > Offline voice to text is on (Windows): the mic records in the app, no Win+H. */
+  let offlineOn = false;
+  /** The current dictation is an offline recording. */
+  let offline = false;
+  /** An offline recording is being written down. */
+  let writing = false;
+
+  async function refreshOffline(): Promise<boolean> {
+    if (isMac) return false;
+    const s = await api.voiceStatus().catch(() => null);
+    offlineOn = !!s?.supported && s.enabled;
+    renderVoice();
+    return offlineOn;
+  }
 
   function renderVoice(): void {
     const editor = !editorView.hidden;
@@ -412,12 +433,19 @@ export function mount(el: HTMLElement): void {
     mic.classList.toggle("active", dictating);
     micLabel.textContent = dictating ? "Stop" : "Dictate";
     mic.title = dictating ? "Stop dictation (Esc)" : `Dictate (${dictateKeys})`;
+    mic.disabled = writing;
     const off = voice?.off === true && isMac;
     voiceSettings.hidden = !editor || !off;
     if (voice && !voice.available) {
       voiceHint.textContent = isMac ? "Dictation isn't available on this Mac" : "Voice typing isn't available on this PC";
     } else if (off) {
       voiceHint.textContent = "Dictation is off on this Mac";
+    } else if (writing) {
+      voiceHint.textContent = "Writing it down…";
+    } else if (dictating && offline) {
+      voiceHint.textContent = "Listening… click Stop or press Esc";
+    } else if (offlineOn) {
+      voiceHint.textContent = "Speak in English (offline voice to text)";
     } else if (voiceTrouble) {
       voiceHint.textContent = DICTATION_TROUBLE;
     } else if (dictating) {
@@ -433,6 +461,12 @@ export function mount(el: HTMLElement): void {
     clearTimeout(dictationTimer);
     clearTimeout(quietTimer);
     if (!dictating) return;
+    if (offline) {
+      // Stop / Esc: write it down. The note closed: throw the recording away.
+      if (end) void finishOffline();
+      else cancelOffline();
+      return;
+    }
     dictating = false;
     log("info", end ? "dictation stopped by the user" : "dictation stopped");
     api.dictationStop(end).catch(() => {});
@@ -453,6 +487,9 @@ export function mount(el: HTMLElement): void {
       renderVoice();
       return;
     }
+    if (writing) return;
+    if (await refreshOffline()) return startOffline();
+    if (!draft || editorView.hidden) return;
     dictating = true;
     renderVoice();
     log("info", "dictation requested");
@@ -486,7 +523,80 @@ export function mount(el: HTMLElement): void {
     renderVoice();
   }
 
+  // ---- Offline voice to text (Windows; Rust: voice.rs) ----
+  // notes_dictate starts recording; Stop, Esc or 120 s stop it, voice_stop writes it down on a
+  // background thread and the text goes in at the cursor (the input event runs autosave).
+
+  async function startOffline(): Promise<void> {
+    if (!draft || editorView.hidden) return;
+    offline = true;
+    dictating = true;
+    status.textContent = "";
+    renderVoice();
+    log("info", "offline voice to text: start");
+    try {
+      await api.dictate();
+    } catch (e) {
+      log("error", `offline voice to text: ${e}`);
+      status.textContent = String(e);
+      dictating = false;
+      offline = false;
+      api.dictationStop(false).catch(() => {});
+      renderVoice();
+      return;
+    }
+    clearTimeout(dictationTimer);
+    dictationTimer = window.setTimeout(() => void finishOffline(), OFFLINE_MAX_MS);
+  }
+
+  function cancelOffline(): void {
+    dictating = false;
+    offline = false;
+    log("info", "offline voice to text: cancelled");
+    api.voiceCancel().catch(() => {});
+    api.dictationStop(false).catch(() => {});
+    renderVoice();
+  }
+
+  async function finishOffline(): Promise<void> {
+    if (!offline || !dictating) return;
+    clearTimeout(dictationTimer);
+    dictating = false;
+    writing = true;
+    renderVoice();
+    const d = draft;
+    try {
+      const text = await api.voiceStop();
+      if (!d || draft !== d || editorView.hidden) {
+        log("warn", "offline voice to text: the note was closed before the text was ready");
+      } else {
+        insertAtCursor(text);
+        log("info", `offline voice to text: inserted ${text.length} characters`);
+      }
+    } catch (e) {
+      log("error", `offline voice to text: ${e}`);
+      if (draft === d) status.textContent = String(e);
+    } finally {
+      writing = false;
+      offline = false;
+      api.dictationStop(false).catch(() => {});
+      renderVoice();
+    }
+  }
+
+  /** Puts text at the cursor (replacing a selection), with a space before it when needed. */
+  function insertAtCursor(text: string): void {
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const before = textarea.value.slice(0, start);
+    const gap = before && !/\s$/.test(before) ? " " : "";
+    textarea.focus();
+    textarea.setRangeText(gap + text, start, end, "end");
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+
   function toggleDictation(): void {
+    if (writing) return;
     if (dictating) stopDictation(true);
     else void startDictation();
   }
@@ -511,6 +621,7 @@ export function mount(el: HTMLElement): void {
       renderVoice();
     })
     .catch(() => {});
+  void refreshOffline();
   renderVoice();
 
   // Cmd+N (Ctrl+N on Windows) makes a new note while the Notes tab is showing.
@@ -524,10 +635,10 @@ export function mount(el: HTMLElement): void {
     } else if (cmd && e.shiftKey && !e.altKey && e.key.toLowerCase() === "d" && !editorView.hidden) {
       e.preventDefault();
       toggleDictation();
-    } else if (e.key === "Escape" && dictating) {
+    } else if (e.key === "Escape" && (dictating || writing)) {
       // The first Esc stops dictation; the next one closes the window (main.ts).
       e.preventDefault();
-      stopDictation(true);
+      if (dictating) stopDictation(true);
     }
   });
 
