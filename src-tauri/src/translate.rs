@@ -7,12 +7,14 @@
 //!   look like one change there. This module runs its own clipboard listener instead
 //!   (AddClipboardFormatListener on a message-only window): one WM_CLIPBOARDUPDATE per copy.
 //! - macOS (and others): clipboard.rs calls `on_text_copied` with each new text and how far the
-//!   pasteboard changeCount moved since its last look; a jump of 2 or more counts as a double copy.
+//!   pasteboard changeCount moved since its last look (a jump of 2 or more counts as a double
+//!   copy), and `on_other_copied` for an image or files.
 //!
 //! The card is one reusable window (label "translate"), created hidden on first use, shown near
 //! the mouse pointer on the screen under it and always on top once its page has drawn
-//! (translate_card_show), hidden again on Esc, close, Copy or a click elsewhere. macOS: shown
-//! without activating HL Desk (the keyboard stays in the user's app until they click the card).
+//! (translate_card_show), hidden again on Esc, close, Copy, a click elsewhere or the next single
+//! copy (unless pinned; a new double copy reuses it). macOS: shown without activating HL Desk
+//! (the keyboard stays in the user's app until they click the card).
 //! Windows: shown and given the keyboard. Its page keeps the engine in a Web Worker and stops it
 //! after 2 minutes idle.
 //!
@@ -107,7 +109,7 @@ fn hash(text: &str) -> u64 {
 /// Entry point for the clipboard watcher (clipboard.rs, macOS): each new text copy, with how far
 /// the clipboard change counter moved since the watcher last looked (1 for a single copy).
 /// Windows ignores it: this module's own listener sees every copy there.
-#[allow(dead_code)] // called from clipboard.rs once wired (see the module comment)
+#[cfg_attr(windows, allow(dead_code))] // called from the macOS watcher only
 pub fn on_text_copied(app: &AppHandle, text: &str, jump: i64) {
     if cfg!(windows) {
         return;
@@ -115,14 +117,35 @@ pub fn on_text_copied(app: &AppHandle, text: &str, jump: i64) {
     handle_copy(app, text, jump);
 }
 
-/// Something other than text was copied: a text copy after it is a first copy again.
-fn note_other_copy() {
+/// Entry point for the clipboard watcher (clipboard.rs, macOS): an image or files were copied.
+#[cfg_attr(windows, allow(dead_code))] // called from the macOS watcher only
+pub fn on_other_copied(app: &AppHandle) {
+    if cfg!(windows) {
+        return;
+    }
+    other_copy(app);
+}
+
+/// Something other than text was copied: a text copy after it is a first copy again, and an
+/// unpinned card hides.
+fn other_copy(app: &AppHandle) {
     *lock(&LAST) = None;
+    single_copy(app);
+}
+
+/// A single copy (not a double one): tell a shown card, which hides unless pinned.
+fn single_copy(app: &AppHandle) {
+    let shown = app
+        .get_webview_window(CARD_LABEL)
+        .is_some_and(|w| w.is_visible().unwrap_or(false));
+    if shown {
+        let _ = app.emit_to(CARD_LABEL, COPIED_EVENT, ());
+    }
 }
 
 fn handle_copy(app: &AppHandle, text: &str, jump: i64) {
     if text.trim().is_empty() {
-        note_other_copy();
+        other_copy(app);
         return;
     }
     let seen = Seen { hash: hash(text), at_ms: now_ms() };
@@ -148,6 +171,8 @@ fn handle_copy(app: &AppHandle, text: &str, jump: i64) {
             text.chars().count()
         ));
         open_card(app, text);
+    } else {
+        single_copy(app);
     }
 }
 
@@ -584,6 +609,8 @@ async fn download_pair(app: &AppHandle, pair: Pair, progress: &Channel<Progress>
 
 const CARD_LABEL: &str = "translate";
 const OPEN_EVENT: &str = "translate://open";
+/// A single copy elsewhere: an unpinned card hides (a new double copy reuses it).
+const COPIED_EVENT: &str = "translate://copied";
 /// Card width and first height in points; the page reports its real height.
 const CARD_W: f64 = 360.0;
 const CARD_H: f64 = 220.0;
@@ -1037,7 +1064,7 @@ mod listener {
     fn on_update(app: &AppHandle) {
         // SAFETY: IsClipboardFormatAvailable needs no open clipboard.
         if unsafe { IsClipboardFormatAvailable(CF_UNICODETEXT) } == 0 || private_copy() {
-            super::note_other_copy();
+            super::other_copy(app);
             return;
         }
         // clipboard.rs may be reading at the same moment: try a few times.

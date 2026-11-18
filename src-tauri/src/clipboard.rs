@@ -743,6 +743,8 @@ fn watch(app: AppHandle) {
                 return None;
             }
             let (count, own) = own_change_check(&state, || pasteboard.changeCount() as i64);
+            // How many copies happened since the last look (2 or more: a quick Cmd+C twice).
+            let jump = count - last_count;
             last_count = count;
             if own {
                 applog::info("clipboard: skipped our own copy");
@@ -764,9 +766,14 @@ fn watch(app: AppHandle) {
                 applog::info("clipboard: skipped a private copy");
                 return None;
             }
-            Some(copied)
+            Some((copied, jump))
         });
-        if let Some(copied) = copied {
+        if let Some((copied, jump)) = copied {
+            // Translate card (translate.rs): Cmd+C twice opens it, any other copy hides it.
+            match &copied {
+                Copied::Text(text) => crate::translate::on_text_copied(&app, text, jump),
+                _ => crate::translate::on_other_copied(&app),
+            }
             on_copy(&app, copied);
         }
     }

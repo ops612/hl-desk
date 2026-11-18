@@ -76,8 +76,34 @@ fn shell_open_url(url: String) -> Result<(), String> {
     })
 }
 
+/// Settings > Open-source notices: opens THIRD_PARTY_NOTICES.md (bundled as a resource,
+/// tauri.conf.json) in a text editor (TextEdit on macOS, Notepad on Windows).
+#[tauri::command]
+fn shell_open_notices(app: AppHandle) -> Result<(), String> {
+    let path = app
+        .path()
+        .resource_dir()
+        .map_err(|e| e.to_string())?
+        .join("THIRD_PARTY_NOTICES.md");
+    if !path.exists() {
+        applog::error(&format!("open notices: {} is missing", path.display()));
+        return Err("The notices file is missing.".into());
+    }
+    applog::info(&format!("open notices: {}", path.display()));
+    #[cfg(target_os = "macos")]
+    let opened = std::process::Command::new("open").arg("-t").arg(&path).spawn();
+    #[cfg(target_os = "windows")]
+    let opened = std::process::Command::new("notepad.exe").arg(&path).spawn();
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let opened = std::process::Command::new("xdg-open").arg(&path).spawn();
+    opened.map(|_| ()).map_err(|e| {
+        applog::error(&format!("open notices failed: {e}"));
+        e.to_string()
+    })
+}
+
 fn shell_handlers() -> impl Fn(Invoke) -> bool + Send + Sync + 'static {
-    tauri::generate_handler![shell_set_pinned, shell_show_main, shell_open_url]
+    tauri::generate_handler![shell_set_pinned, shell_show_main, shell_open_url, shell_open_notices]
 }
 
 fn now_ms() -> u64 {

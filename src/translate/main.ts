@@ -127,6 +127,11 @@ function ensureEngine(status: PairStatus): Promise<void> {
     const res = await fetch("/translate/bergamot-translator.wasm");
     if (!res.ok) throw new Error(`could not read the engine (${res.status})`);
     const wasm = await res.arrayBuffer();
+    // The engine uses WebAssembly SIMD (Safari / WebKit 16.4 or newer); say so instead of a
+    // compile error on an older Mac.
+    if (!WebAssembly.validate(wasm)) {
+      throw new Error("This computer's web engine is too old for translation (on a Mac: Safari 16.4 or newer).");
+    }
     const init = await call<{ ms: number; heapMB: number }>({ cmd: "init", wasm }, [wasm]);
     log("info", `engine started in ${init.ms} ms (${init.heapMB} MB)`);
     const files: Record<string, { name: string; buffer: ArrayBuffer }> = {};
@@ -425,6 +430,16 @@ async function open(): Promise<void> {
   await run();
 }
 
+// macOS: the card comes up without the keyboard (the user's app keeps it), so Esc and Enter
+// work only after a click on the card.
+if (/Mac/.test(navigator.userAgent)) {
+  document.querySelector(".tr-footer")!.textContent = "Offline · click the card for Esc / Enter";
+}
+
 void listen("translate://open", () => void open());
+// A single copy elsewhere: an unpinned card hides (Rust sends it only while the card is shown).
+void listen("translate://copied", () => {
+  if (!pinned) hide();
+});
 log("info", "page loaded");
 void open();
