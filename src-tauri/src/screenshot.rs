@@ -171,6 +171,11 @@ fn get(app: &AppHandle, id: i64) -> Res<Shot> {
         .map_err(|_| "This screenshot is gone (kept 1 day).".to_string())
 }
 
+/// The PNG file of capture `id` (text recognition, ocr.rs, reads it).
+pub(crate) fn shot_path(app: &AppHandle, id: i64) -> Res<String> {
+    get(app, id).map(|shot| shot.path)
+}
+
 /// Deletes captures older than 24 hours (file and row). Returns how many were deleted.
 fn cleanup(app: &AppHandle) -> Res<usize> {
     let c = conn(app)?;
