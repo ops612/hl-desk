@@ -572,10 +572,32 @@ use std::path::Path;
 #[cfg(windows)]
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
+/// whisper.cpp is not safe to enter from two threads at once: whisper_print_system_info
+/// rewrites one static std::string with no lock (and whisper-rs hands out a &'static str into
+/// it); two threads in it corrupted the heap (STATUS_HEAP_CORRUPTION 0xc0000374 in CI, two
+/// tests in parallel). Model loading also sets up ggml's global backend list. So every call
+/// into whisper here holds this lock: one load, transcription or info call at a time (a second
+/// dictation or a bench waits for the first).
+#[cfg(windows)]
+static WHISPER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(windows)]
+fn whisper_lock() -> std::sync::MutexGuard<'static, ()> {
+    WHISPER.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// whisper.cpp's build and CPU features ("AVX = 1 | F16C = 1 | ..."), copied out under the lock.
+#[cfg(windows)]
+pub fn system_info() -> String {
+    let _whisper = whisper_lock();
+    whisper_rs::print_system_info().to_string()
+}
+
 /// Loads a ggml whisper model.
 #[cfg(windows)]
 pub fn load(model_path: &Path) -> Result<WhisperContext, String> {
     let path = model_path.to_str().ok_or("model path is not valid UTF-8")?;
+    let _whisper = whisper_lock();
     WhisperContext::new_with_params(path, WhisperContextParameters::default())
         .map_err(|e| format!("could not load the voice model: {e}"))
 }
@@ -719,6 +741,7 @@ pub fn transcribe_with(
     language: Option<&str>,
     threads: usize,
 ) -> Result<Transcript, String> {
+    let _whisper = whisper_lock();
     let mut state = ctx
         .create_state()
         .map_err(|e| format!("could not start the voice model: {e}"))?;
@@ -907,12 +930,27 @@ mod tests {
     /// (no F16C); cpu_supported() relies on this.
     #[test]
     fn whisper_is_built_for_avx_and_f16c_only() {
-        let info = whisper_rs::print_system_info();
+        let info = system_info();
         eprintln!("voice: system {info}");
         assert!(info.contains("AVX = 1"), "AVX should be on: {info}");
         assert!(info.contains("F16C = 1"), "F16C should be on: {info}");
         for flag in ["AVX2 = 1", "FMA = 1", "BMI2 = 1", "AVX512 = 1"] {
             assert!(!info.contains(flag), "{flag} in a build that must run without it: {info}");
+        }
+    }
+
+    /// The CI crash (STATUS_HEAP_CORRUPTION): whisper_print_system_info from several threads at
+    /// once. Through system_info's lock it must stay whole and the same every time.
+    #[test]
+    fn system_info_is_safe_from_many_threads() {
+        let first = system_info();
+        let handles: Vec<_> = (0..8)
+            .map(|_| std::thread::spawn(|| (0..300).map(|_| system_info()).collect::<Vec<_>>()))
+            .collect();
+        for h in handles {
+            for info in h.join().expect("thread") {
+                assert_eq!(info, first);
+            }
         }
     }
 
@@ -944,7 +982,7 @@ mod tests {
         assert!(model.exists(), "HL_WHISPER_MODELS is set but {} is missing", model.display());
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/voice-en.wav");
         eprintln!("voice: whisper.cpp {}", whisper_rs::get_whisper_version());
-        eprintln!("voice: system {}", whisper_rs::print_system_info());
+        eprintln!("voice: system {}", system_info());
         let t = Instant::now();
         let ctx = load(&model).expect("load model");
         eprintln!("voice: {} loaded in {} ms", imp::MODEL.name, t.elapsed().as_millis());
