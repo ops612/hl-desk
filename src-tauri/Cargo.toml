@@ -68,9 +68,7 @@ windows-future = "0.3"
 # raw-api: the C callback types used to time the encoder and decoder.
 whisper-rs = { version = "0.16", features = ["raw-api"] }
 cpal = "0.18"
-
-[target.'cfg(windows)'.dev-dependencies]
-# Reads the voice test fixture (voice.rs tests).
+# Reads WAV clips for the hidden --voice-bench (voice.rs) and the voice test fixture.
 hound = "3.5"
 
 [profile.release]

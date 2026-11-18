@@ -205,10 +205,13 @@ pub fn run() {
 
     tauri::Builder::default()
         // Must be the first plugin. A second launch only wakes this one: it shows the window,
-        // or with --capture starts an area capture (lets a script test capture).
-        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+        // or with --capture starts an area capture (lets a script test capture), or with
+        // --voice-bench <model.bin> <clip.wav> [threads] runs the hidden voice bench (app log).
+        .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
             applog::info(&format!("second launch: {:?}", argv.get(1..).unwrap_or_default()));
-            if argv.iter().any(|a| a == "--capture") {
+            if let Some(bench) = voice::bench_args(&argv, std::path::Path::new(&cwd)) {
+                voice::bench(bench);
+            } else if argv.iter().any(|a| a == "--capture") {
                 screenshot::start_capture(app.clone());
             } else {
                 show_main_window(app);
@@ -328,7 +331,13 @@ pub fn run() {
             // Started at login (--hidden): tray icon only. Started by hand: show the window.
             let first_run = settings::first_run(handle);
             let has_arg = |name: &str| std::env::args_os().any(|a| a == name);
-            if has_arg("--capture") {
+            let args: Vec<String> =
+                std::env::args_os().map(|a| a.to_string_lossy().into_owned()).collect();
+            let cwd = std::env::current_dir().unwrap_or_default();
+            if let Some(bench) = voice::bench_args(&args, &cwd) {
+                // A first launch with --voice-bench runs the bench too, with the window left hidden.
+                voice::bench(bench);
+            } else if has_arg("--capture") {
                 // A first launch with --capture starts a capture too (same as a second launch).
                 screenshot::start_capture(handle.clone());
             } else if first_run || !has_arg("--hidden") {

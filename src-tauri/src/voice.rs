@@ -187,7 +187,7 @@ mod imp {
     use std::{
         path::{Path, PathBuf},
         sync::{
-            atomic::{AtomicBool, Ordering},
+            atomic::{AtomicBool, AtomicU32, Ordering},
             mpsc, Arc, Mutex,
         },
         time::{Duration, Instant},
@@ -354,12 +354,35 @@ mod imp {
         }
     }
 
-    /// The input stream; each callback downmixes to mono into `buf`, which was allocated for
-    /// `max` samples up front and is never grown.
+    /// One frame (a sample per channel) as one mono sample: their mean. Used by the microphone
+    /// callback and by the bench for a stereo WAV.
+    fn mono<T>(frame: &[T]) -> f32
+    where
+        T: Sample,
+        f32: FromSample<T>,
+    {
+        frame.iter().map(|s| f32::from_sample(*s)).sum::<f32>() / frame.len().max(1) as f32
+    }
+
+    /// What the audio callback shares with the recording thread. The callback only copies
+    /// samples into `buf` (allocated for `max` samples up front, never grown) and raises `peak`;
+    /// it never blocks, allocates or logs, as a slow callback makes WASAPI drop audio ("A buffer
+    /// underrun or overrun occurred"). The recording thread reads `peak` for the level events
+    /// and locks `buf` only after the stream is dropped.
+    struct Shared {
+        buf: Mutex<Vec<f32>>,
+        /// The loudest |sample| since the recording thread last took it, as f32 bits (for
+        /// non-negative floats the bit order is the number order, so fetch_max works).
+        peak: AtomicU32,
+        /// Stream errors (buffer under/overruns); the first one's text, logged when it ends.
+        errors: AtomicU32,
+        first_error: Mutex<Option<String>>,
+    }
+
     fn build_stream<T>(
         device: &cpal::Device,
         config: cpal::StreamConfig,
-        buf: Arc<Mutex<Vec<f32>>>,
+        shared: Arc<Shared>,
         max: usize,
     ) -> Result<cpal::Stream, cpal::Error>
     where
@@ -367,25 +390,40 @@ mod imp {
         f32: FromSample<T>,
     {
         let channels = config.channels.max(1) as usize;
+        let on_error = shared.clone();
         device.build_input_stream::<T, _, _>(
             config,
             move |data: &[T], _| {
-                let mut buf = lock(&buf);
-                for frame in data.chunks(channels) {
-                    if buf.len() >= max {
-                        break;
+                let mut loudest = 0f32;
+                // Never waits: the only other user locks it once the stream is gone.
+                if let Ok(mut buf) = shared.buf.try_lock() {
+                    for frame in data.chunks(channels) {
+                        if buf.len() >= max {
+                            break;
+                        }
+                        let s = mono(frame);
+                        loudest = loudest.max(s.abs());
+                        buf.push(s);
                     }
-                    let sum: f32 = frame.iter().map(|s| f32::from_sample(*s)).sum();
-                    buf.push(sum / frame.len() as f32);
+                }
+                if loudest > 0.0 && loudest.is_finite() {
+                    shared.peak.fetch_max(loudest.to_bits(), Ordering::Relaxed);
                 }
             },
-            |e| applog::warn(&format!("voice: microphone stream: {e}")),
+            move |e| {
+                // Counted here, logged by the recording thread: no file writes on the audio thread.
+                if on_error.errors.fetch_add(1, Ordering::Relaxed) == 0 {
+                    if let Ok(mut first) = on_error.first_error.try_lock() {
+                        *first = Some(e.to_string());
+                    }
+                }
+            },
             None,
         )
     }
 
-    /// Opens the default microphone and starts it. Returns the stream, its buffer and rate.
-    fn open_mic() -> Result<(cpal::Stream, Arc<Mutex<Vec<f32>>>, u32), String> {
+    /// Opens the default microphone and starts it. Returns the stream, what it shares, and its rate.
+    fn open_mic() -> Result<(cpal::Stream, Arc<Shared>, u32), String> {
         let host = cpal::default_host();
         let device = host.default_input_device().ok_or_else(|| {
             applog::error("voice: no default input device");
@@ -400,19 +438,24 @@ mod imp {
             config.sample_format()
         ));
         let max = rate as usize * (MAX_RECORDING.as_secs() as usize + 1);
-        let buf = Arc::new(Mutex::new(Vec::<f32>::with_capacity(max)));
+        let shared = Arc::new(Shared {
+            buf: Mutex::new(Vec::<f32>::with_capacity(max)),
+            peak: AtomicU32::new(0),
+            errors: AtomicU32::new(0),
+            first_error: Mutex::new(None),
+        });
         let format = config.sample_format();
         let config: cpal::StreamConfig = config.into();
         let stream = match format {
-            cpal::SampleFormat::F32 => build_stream::<f32>(&device, config, buf.clone(), max),
-            cpal::SampleFormat::I16 => build_stream::<i16>(&device, config, buf.clone(), max),
-            cpal::SampleFormat::I32 => build_stream::<i32>(&device, config, buf.clone(), max),
-            cpal::SampleFormat::U16 => build_stream::<u16>(&device, config, buf.clone(), max),
+            cpal::SampleFormat::F32 => build_stream::<f32>(&device, config, shared.clone(), max),
+            cpal::SampleFormat::I16 => build_stream::<i16>(&device, config, shared.clone(), max),
+            cpal::SampleFormat::I32 => build_stream::<i32>(&device, config, shared.clone(), max),
+            cpal::SampleFormat::U16 => build_stream::<u16>(&device, config, shared.clone(), max),
             other => return Err(format!("The microphone's sample format ({other}) is not supported.")),
         }
         .map_err(|e| mic_error(&e))?;
         stream.play().map_err(|e| mic_error(&e))?;
-        Ok((stream, buf, rate))
+        Ok((stream, shared, rate))
     }
 
     pub fn start(app: &AppHandle) -> Result<(), String> {
@@ -431,7 +474,7 @@ mod imp {
         let (done_tx, done_rx) = mpsc::channel::<Captured>();
         let app = app.clone();
         std::thread::spawn(move || {
-            let (stream, buf, rate) = match open_mic() {
+            let (stream, shared, rate) = match open_mic() {
                 Ok(opened) => opened,
                 Err(e) => {
                     let _ = ready_tx.send(Err(e));
@@ -440,9 +483,9 @@ mod imp {
             };
             let _ = ready_tx.send(Ok(()));
             // Stop sent, or the Recording dropped (start timed out or was called off): stop now.
-            // Meanwhile, every LEVEL_EVERY, send the level of what came in since the last tick.
+            // Meanwhile, every LEVEL_EVERY, send the peak of what came in since the last tick
+            // (raised by the audio callback, taken here: this thread is the level timer).
             let deadline = Instant::now() + MAX_RECORDING;
-            let mut seen = 0usize;
             loop {
                 let left = deadline.saturating_duration_since(Instant::now());
                 if left.is_zero() {
@@ -451,19 +494,20 @@ mod imp {
                 }
                 match stop_rx.recv_timeout(LEVEL_EVERY.min(left)) {
                     Err(mpsc::RecvTimeoutError::Timeout) => {
-                        let level = {
-                            let buf = lock(&buf);
-                            let peak = buf[seen.min(buf.len())..].iter().fold(0f32, |m, s| m.max(s.abs()));
-                            seen = buf.len();
-                            peak.min(1.0)
-                        };
+                        let level = f32::from_bits(shared.peak.swap(0, Ordering::Relaxed)).min(1.0);
                         let _ = app.emit(LEVEL_EVENT, level);
                     }
                     _ => break,
                 }
             }
+            // Dropping the stream ends its callbacks, so the buffer is free from here on.
             drop(stream);
-            let samples = std::mem::take(&mut *lock(&buf));
+            let errors = shared.errors.load(Ordering::Relaxed);
+            if errors > 0 {
+                let first = lock(&shared.first_error).take().unwrap_or_default();
+                applog::warn(&format!("voice: microphone stream: {errors} error(s), first: {first}"));
+            }
+            let samples = std::mem::take(&mut *lock(&shared.buf));
             let _ = done_tx.send(Captured { samples, rate });
         });
         let rec = Recording { stop: stop_tx, done: done_rx };
@@ -515,18 +559,26 @@ mod imp {
         .map_err(|e| e.to_string())?
     }
 
+    /// Mono samples at their own rate to whisper's input, as for every recording: silence is
+    /// refused, the rest goes to 16 kHz and is padded to whisper's 1 s minimum.
+    fn prepare(samples: &[f32], rate: u32) -> Result<Vec<f32>, String> {
+        let peak = samples.iter().fold(0f32, |m, s| m.max(s.abs()));
+        if samples.is_empty() || peak < 1e-4 {
+            return Err(SILENT.into());
+        }
+        let mut pcm = to_16k(samples, rate);
+        if pcm.len() < MIN_PCM {
+            pcm.resize(MIN_PCM, 0.0);
+        }
+        Ok(pcm)
+    }
+
     fn write_down(model: &Path, captured: Captured) -> Result<String, String> {
         let Captured { samples, rate } = captured;
         let recording_ms = samples.len() as u64 * 1000 / rate.max(1) as u64;
         let peak = samples.iter().fold(0f32, |m, s| m.max(s.abs()));
         applog::info(&format!("voice: recording {recording_ms} ms at {rate} Hz, peak {peak:.4}"));
-        if samples.is_empty() || peak < 1e-4 {
-            return Err(SILENT.into());
-        }
-        let mut pcm = to_16k(&samples, rate);
-        if pcm.len() < MIN_PCM {
-            pcm.resize(MIN_PCM, 0.0);
-        }
+        let pcm = prepare(&samples, rate)?;
         let t = Instant::now();
         let ctx = super::load(model)?;
         let load_ms = t.elapsed().as_millis();
@@ -543,6 +595,62 @@ mod imp {
             return Err("No words were recognised. Try again a little closer to the microphone.".into());
         }
         Ok(text)
+    }
+
+    /// The hidden bench (super::bench): `clip` goes through the recording's path (mono, 16 kHz,
+    /// padding) and the same transcribe_with as dictation. Returns the "voice bench:" line.
+    pub fn bench(model: &Path, clip: &Path, threads: Option<usize>) -> Result<String, String> {
+        if !cpu_supported() {
+            return Err(CPU_REASON.into());
+        }
+        let size = std::fs::metadata(model)
+            .map_err(|e| format!("model {}: {e}", model.display()))?
+            .len();
+        let Captured { samples, rate } = read_wav(clip)?;
+        let clip_ms = samples.len() as u64 * 1000 / rate.max(1) as u64;
+        let pcm = prepare(&samples, rate)?;
+        let threads = threads.unwrap_or_else(super::thread_count);
+        let t = Instant::now();
+        let ctx = super::load(model)?;
+        let load_ms = t.elapsed().as_millis();
+        let out = super::transcribe_with(&ctx, &pcm, Some("en"), threads)?;
+        let tm = &out.timings;
+        let name = model.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let text: String = out.text.chars().take(120).collect::<String>().replace('"', "'");
+        Ok(format!(
+            "voice bench: model {name} {:.1} MB, clip {clip_ms} ms at {rate} Hz, threads {}, audio_ctx {}, load {load_ms} ms, mel {} ms, encode {} ms ({} encoder runs), decode {} ms, steps {}, chars {}, text \"{text}\"",
+            size as f64 / 1_048_576.0,
+            tm.threads,
+            tm.audio_ctx_text(),
+            tm.mel_ms,
+            tm.encode_ms,
+            tm.encoder_runs,
+            tm.decode_ms,
+            tm.steps,
+            out.text.chars().count(),
+        ))
+    }
+
+    /// A WAV file as mono samples at its own rate: any rate, any channel count (mixed down like
+    /// the microphone), 8 to 32-bit integer or 32-bit float.
+    fn read_wav(path: &Path) -> Result<Captured, String> {
+        let mut reader =
+            hound::WavReader::open(path).map_err(|e| format!("clip {}: {e}", path.display()))?;
+        let spec = reader.spec();
+        let bad = |e: hound::Error| format!("clip {}: {e}", path.display());
+        let interleaved: Vec<f32> = match spec.sample_format {
+            hound::SampleFormat::Float => reader.samples::<f32>().collect::<Result<_, _>>().map_err(bad)?,
+            hound::SampleFormat::Int => {
+                let scale = 1.0 / (1u64 << (spec.bits_per_sample.clamp(1, 32) - 1)) as f32;
+                reader
+                    .samples::<i32>()
+                    .map(|s| s.map(|s| s as f32 * scale))
+                    .collect::<Result<_, _>>()
+                    .map_err(bad)?
+            }
+        };
+        let samples = interleaved.chunks(spec.channels.max(1) as usize).map(mono).collect();
+        Ok(Captured { samples, rate: spec.sample_rate })
     }
 
     /// Mono samples at `rate` to 16 kHz: each output sample is the mean of the input samples
@@ -641,19 +749,47 @@ fn audio_ctx_for(n_samples: usize) -> i32 {
     frames.clamp(256, FULL) as i32
 }
 
+/// whisper's window: 30 s at 16 kHz. whisper.cpp itself cuts longer audio into 30 s windows
+/// (no timestamps: each window moves on by a full 30 s), runs the full-size encoder on each, and
+/// drops a last piece under 1 s; transcribe_with does the same cut itself, so a short last piece
+/// gets an encoder sized to it instead of the full 30 s one.
+#[cfg_attr(not(windows), allow(dead_code))]
+const WINDOW: usize = 30 * 16_000;
+
+/// The pieces whisper runs on: 30 s windows, then the rest; a rest under 1 s is dropped (as
+/// whisper.cpp does), except when it is the whole clip.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_for(n_samples: usize) -> Vec<std::ops::Range<usize>> {
+    (0..n_samples)
+        .step_by(WINDOW)
+        .map(|a| a..(a + WINDOW).min(n_samples))
+        .filter(|r| r.start == 0 || r.len() >= 16_000)
+        .collect()
+}
+
 /// Where the time went in one transcription (for the log line).
 #[cfg(windows)]
 pub struct Timings {
     pub threads: usize,
-    pub audio_ctx: i32,
-    /// Audio to mel spectrogram, until the encoder starts.
+    /// The encoder size for each 30 s window (1500 = full).
+    pub audio_ctx: Vec<i32>,
+    /// Audio to mel spectrogram, until the encoder starts (all windows).
     pub mel_ms: u128,
-    /// Encoder, until the first token's logits (includes the first decoder pass).
+    /// Encoder runs, each until its first token's logits (includes that first decoder pass).
     pub encode_ms: u128,
-    /// The rest of the decoding.
+    pub encoder_runs: u32,
+    /// The rest: decoding.
     pub decode_ms: u128,
     /// Decoder steps (tokens tried; more than the text's tokens means retries).
     pub steps: u32,
+}
+
+#[cfg(windows)]
+impl Timings {
+    /// "1500+1500+256": the encoder size per window.
+    pub fn audio_ctx_text(&self) -> String {
+        self.audio_ctx.iter().map(|c| c.to_string()).collect::<Vec<_>>().join("+")
+    }
 }
 
 #[cfg(windows)]
@@ -661,8 +797,14 @@ impl std::fmt::Display for Timings {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "threads {}, audio_ctx {}, mel {} ms, encode {} ms, decode {} ms, {} decoder steps",
-            self.threads, self.audio_ctx, self.mel_ms, self.encode_ms, self.decode_ms, self.steps
+            "threads {}, audio_ctx {}, mel {} ms, encode {} ms ({} encoder runs), decode {} ms, {} decoder steps",
+            self.threads,
+            self.audio_ctx_text(),
+            self.mel_ms,
+            self.encode_ms,
+            self.encoder_runs,
+            self.decode_ms,
+            self.steps
         )
     }
 }
@@ -673,11 +815,18 @@ pub struct Transcript {
     pub timings: Timings,
 }
 
-/// Filled by whisper.cpp's callbacks during one `full` run (same thread).
+/// Filled by whisper.cpp's callbacks during `full` runs (same thread). Each encoder run is timed
+/// from its start to the next logits; whisper.cpp runs the encoder once per 30 s window, so on
+/// long audio "encode until the first logits" alone left the later windows' encoder runs in
+/// the decode time.
 #[cfg(windows)]
 struct Probe {
-    encoder_begin: Option<std::time::Instant>,
-    first_logits: Option<std::time::Instant>,
+    /// The encoder run still waiting for its first logits.
+    encoding: Option<std::time::Instant>,
+    /// The first encoder start in the current window (mel time ends there).
+    window_encoder: Option<std::time::Instant>,
+    encode: std::time::Duration,
+    encoder_runs: u32,
     steps: u32,
 }
 
@@ -689,7 +838,10 @@ unsafe extern "C" fn on_encoder_begin(
 ) -> bool {
     // SAFETY: user_data is the &mut Probe set in transcribe_with, alive for the whole run.
     let probe = unsafe { &mut *(user_data as *mut Probe) };
-    probe.encoder_begin.get_or_insert_with(std::time::Instant::now);
+    let now = std::time::Instant::now();
+    probe.encoding = Some(now);
+    probe.window_encoder.get_or_insert(now);
+    probe.encoder_runs += 1;
     true
 }
 
@@ -704,14 +856,16 @@ unsafe extern "C" fn on_logits(
 ) {
     // SAFETY: as in on_encoder_begin.
     let probe = unsafe { &mut *(user_data as *mut Probe) };
-    probe.first_logits.get_or_insert_with(std::time::Instant::now);
+    if let Some(begin) = probe.encoding.take() {
+        probe.encode += begin.elapsed();
+    }
     probe.steps += 1;
 }
 
 /// Transcribes 16 kHz mono f32 samples with a loaded model on `threads` threads, set up for
-/// short dictation: greedy, no temperature retries, no context from earlier text, one segment
-/// and an encoder sized to the clip when it is under 30 s, no timestamps. `language` is a
-/// whisper code ("en"); None detects it.
+/// short dictation: greedy, no temperature retries, no context from earlier text, no
+/// timestamps. Each 30 s window (windows_for) is one run, as one segment with an encoder sized
+/// to it when it is under 30 s. `language` is a whisper code ("en"); None detects it.
 #[cfg(windows)]
 pub fn transcribe_with(
     ctx: &WhisperContext,
@@ -722,65 +876,148 @@ pub fn transcribe_with(
     let mut state = ctx
         .create_state()
         .map_err(|e| format!("could not start the voice model: {e}"))?;
-    let audio_ctx = audio_ctx_for(pcm_16k_mono_f32.len());
-    let short = audio_ctx < 1500;
-    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-    params.set_language(Some(language.unwrap_or("auto")));
-    params.set_n_threads(threads.max(1) as _);
-    params.set_temperature(0.0);
-    params.set_temperature_inc(0.0);
-    params.set_no_context(true);
-    params.set_single_segment(short);
-    params.set_audio_ctx(if short { audio_ctx } else { 0 });
-    params.set_suppress_blank(true);
-    params.set_no_timestamps(true);
-    params.set_print_special(false);
-    params.set_print_progress(false);
-    params.set_print_realtime(false);
-    params.set_print_timestamps(false);
-    let mut probe = Probe { encoder_begin: None, first_logits: None, steps: 0 };
-    let probe_ptr = &mut probe as *mut Probe as *mut std::ffi::c_void;
-    // SAFETY: the callbacks only touch `probe`, which outlives the synchronous `full` call below.
-    unsafe {
-        params.set_start_encoder_callback(Some(on_encoder_begin));
-        params.set_start_encoder_callback_user_data(probe_ptr);
-        params.set_filter_logits_callback(Some(on_logits));
-        params.set_filter_logits_callback_user_data(probe_ptr);
-    }
+    let mut probe = Probe {
+        encoding: None,
+        window_encoder: None,
+        encode: std::time::Duration::ZERO,
+        encoder_runs: 0,
+        steps: 0,
+    };
+    let mut mel = std::time::Duration::ZERO;
+    let mut sizes = Vec::new();
+    let mut parts: Vec<String> = Vec::new();
     let start = std::time::Instant::now();
-    state
-        .full(params, pcm_16k_mono_f32)
-        .map_err(|e| format!("voice to text failed: {e}"))?;
-    let end = std::time::Instant::now();
-    let mut text = String::new();
-    for segment in state.as_iter() {
-        let part = segment
-            .to_str_lossy()
-            .map_err(|e| format!("could not read the text: {e}"))?;
-        if !is_noise(&part) {
-            text.push_str(&part);
+    for range in windows_for(pcm_16k_mono_f32.len()) {
+        let pcm = &pcm_16k_mono_f32[range];
+        let audio_ctx = audio_ctx_for(pcm.len());
+        let short = audio_ctx < 1500;
+        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+        params.set_language(Some(language.unwrap_or("auto")));
+        params.set_n_threads(threads.max(1) as _);
+        params.set_temperature(0.0);
+        params.set_temperature_inc(0.0);
+        params.set_no_context(true);
+        params.set_single_segment(short);
+        params.set_audio_ctx(if short { audio_ctx } else { 0 });
+        params.set_suppress_blank(true);
+        params.set_no_timestamps(true);
+        params.set_print_special(false);
+        params.set_print_progress(false);
+        params.set_print_realtime(false);
+        params.set_print_timestamps(false);
+        let probe_ptr = &mut probe as *mut Probe as *mut std::ffi::c_void;
+        // SAFETY: the callbacks only touch `probe`, which outlives the synchronous `full` call below.
+        unsafe {
+            params.set_start_encoder_callback(Some(on_encoder_begin));
+            params.set_start_encoder_callback_user_data(probe_ptr);
+            params.set_filter_logits_callback(Some(on_logits));
+            params.set_filter_logits_callback_user_data(probe_ptr);
+        }
+        let window_start = std::time::Instant::now();
+        state
+            .full(params, pcm)
+            .map_err(|e| format!("voice to text failed: {e}"))?;
+        let window_end = std::time::Instant::now();
+        // An encoder run with no logits after it (nothing decoded) ends with the window.
+        if let Some(begin) = probe.encoding.take() {
+            probe.encode += window_end.saturating_duration_since(begin);
+        }
+        mel += probe
+            .window_encoder
+            .take()
+            .unwrap_or(window_end)
+            .saturating_duration_since(window_start);
+        sizes.push(if short { audio_ctx } else { 1500 });
+        let mut text = String::new();
+        for segment in state.as_iter() {
+            let part = segment
+                .to_str_lossy()
+                .map_err(|e| format!("could not read the text: {e}"))?;
+            if !is_noise(&part) {
+                text.push_str(&part);
+            }
+        }
+        let text = text.trim();
+        if !text.is_empty() {
+            parts.push(text.to_string());
         }
     }
-    let ms = |a: std::time::Instant, b: std::time::Instant| b.saturating_duration_since(a).as_millis();
-    let enc = probe.encoder_begin.unwrap_or(start);
-    let first = probe.first_logits.unwrap_or(end);
+    let total = start.elapsed();
     Ok(Transcript {
-        text: text.trim().to_string(),
+        text: parts.join(" "),
         timings: Timings {
             threads,
-            audio_ctx: if short { audio_ctx } else { 1500 },
-            mel_ms: ms(start, enc),
-            encode_ms: ms(enc, first),
-            decode_ms: ms(first, end),
+            audio_ctx: sizes,
+            mel_ms: mel.as_millis(),
+            encode_ms: probe.encode.as_millis(),
+            encoder_runs: probe.encoder_runs,
+            decode_ms: total.saturating_sub(mel).saturating_sub(probe.encode).as_millis(),
             steps: probe.steps,
         },
     })
 }
 
+/// The hidden bench's arguments: `--voice-bench <model.bin> <clip.wav> [threads]`.
+#[derive(Debug, PartialEq)]
+pub(crate) struct BenchArgs {
+    pub model: std::path::PathBuf,
+    pub clip: std::path::PathBuf,
+    /// None: the production default (thread_count).
+    pub threads: Option<usize>,
+}
+
+/// Finds `--voice-bench` in a command line (first launch, or a second launch's argv); relative
+/// paths are taken from `cwd`. None without the flag; Err when its paths are missing.
+pub(crate) fn bench_args(argv: &[String], cwd: &std::path::Path) -> Option<Result<BenchArgs, String>> {
+    let i = argv.iter().position(|a| a == "--voice-bench")?;
+    let rest = &argv[i + 1..];
+    let (Some(model), Some(clip)) = (rest.first(), rest.get(1)) else {
+        return Some(Err("usage: --voice-bench <model.bin> <clip.wav> [threads]".into()));
+    };
+    Some(Ok(BenchArgs {
+        model: cwd.join(model),
+        clip: cwd.join(clip),
+        threads: rest.get(2).and_then(|t| t.parse::<usize>().ok()).filter(|t| *t > 0),
+    }))
+}
+
+/// Runs the bench on its own thread (never the main thread, never the window) and writes its
+/// result to the app log as "voice bench: ..." lines, ending with "voice bench: done".
+pub(crate) fn bench(args: Result<BenchArgs, String>) {
+    use crate::applog;
+    let run = move || {
+        let result = args.and_then(|a| {
+            applog::info(&format!(
+                "voice bench: start model {}, clip {}, threads {}",
+                a.model.display(),
+                a.clip.display(),
+                a.threads.map_or("default".to_string(), |t| t.to_string())
+            ));
+            #[cfg(windows)]
+            {
+                imp::bench(&a.model, &a.clip, a.threads)
+            }
+            #[cfg(not(windows))]
+            {
+                Err::<String, String>("offline voice is only on Windows".into())
+            }
+        });
+        match result {
+            Ok(line) => applog::info(&line),
+            Err(e) => applog::error(&format!("voice bench: failed: {e}")),
+        }
+        applog::info("voice bench: done");
+    };
+    if let Err(e) = std::thread::Builder::new().name("voice-bench".into()).spawn(run) {
+        applog::error(&format!("voice bench: could not start its thread: {e}"));
+    }
+}
+
 /// The recording slot's races and the whisper settings (pure; run on every platform).
 #[cfg(test)]
 mod slot_tests {
-    use super::{audio_ctx_for, threads_for, Slot};
+    use super::{audio_ctx_for, bench_args, threads_for, windows_for, BenchArgs, Slot};
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn threads_are_physical_cores_up_to_4() {
@@ -800,6 +1037,33 @@ mod slot_tests {
         assert_eq!(audio_ctx_for(16_000 * 29), 1500, "29 s: capped");
         assert_eq!(audio_ctx_for(16_000 * 30), 1500);
         assert_eq!(audio_ctx_for(16_000 * 120), 1500);
+    }
+
+    #[test]
+    fn long_audio_is_cut_into_30_s_windows() {
+        let s = 16_000;
+        assert_eq!(windows_for(10 * s), vec![0..10 * s]);
+        assert_eq!(windows_for(30 * s), vec![0..30 * s]);
+        assert_eq!(windows_for(62 * s), vec![0..30 * s, 30 * s..60 * s, 60 * s..62 * s]);
+        assert_eq!(windows_for(30 * s + s / 2), vec![0..30 * s], "a last half second is dropped, as whisper.cpp does");
+        assert_eq!(windows_for(s / 2), vec![0..s / 2], "a whole short clip is kept");
+        assert!(windows_for(0).is_empty());
+    }
+
+    #[test]
+    fn bench_args_are_read() {
+        let argv = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let cwd = Path::new("C:/bench");
+        assert_eq!(bench_args(&argv(&["hl-desk.exe", "--hidden"]), cwd), None);
+        assert_eq!(
+            bench_args(&argv(&["hl-desk.exe", "--voice-bench", "m.bin", "C:/clips/a.wav", "2"]), cwd),
+            Some(Ok(BenchArgs { model: cwd.join("m.bin"), clip: PathBuf::from("C:/clips/a.wav"), threads: Some(2) }))
+        );
+        assert_eq!(
+            bench_args(&argv(&["hl-desk.exe", "--voice-bench", "m.bin", "a.wav"]), cwd),
+            Some(Ok(BenchArgs { model: cwd.join("m.bin"), clip: cwd.join("a.wav"), threads: None }))
+        );
+        assert!(matches!(bench_args(&argv(&["hl-desk.exe", "--voice-bench", "m.bin"]), cwd), Some(Err(_))));
     }
 
     #[test]
