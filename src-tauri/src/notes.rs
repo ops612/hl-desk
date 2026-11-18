@@ -194,6 +194,10 @@ const DICTATION_KEEP_OPEN_MS: i64 = 60_000;
 /// Offline voice to text: up to 120 s of recording, then the time to write it down.
 #[cfg(target_os = "windows")]
 const OFFLINE_KEEP_OPEN_MS: i64 = 180_000;
+/// The last dictation started was offline voice to text (so stopping it never sends Win+H, even
+/// if the Settings switch changed since).
+#[cfg(target_os = "windows")]
+static OFFLINE_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// Until when (Unix ms) the popover ignores focus loss. 0: not dictating.
 static DICTATING_UNTIL: AtomicI64 = AtomicI64::new(0);
 
@@ -360,7 +364,9 @@ async fn notes_dictate(app: AppHandle) -> Result<bool, String> {
     // Offline voice to text: record from the default microphone (voice.rs); the page stops it
     // with voice_stop and inserts the text itself.
     #[cfg(target_os = "windows")]
-    if crate::voice::enabled(&app) {
+    OFFLINE_STARTED.store(crate::voice::enabled(&app), Ordering::SeqCst);
+    #[cfg(target_os = "windows")]
+    if OFFLINE_STARTED.load(Ordering::SeqCst) {
         DICTATING_UNTIL.store(now_ms() + OFFLINE_KEEP_OPEN_MS, Ordering::SeqCst);
         let result = crate::voice::start(&app);
         match &result {
@@ -417,8 +423,8 @@ async fn notes_dictation_stop(app: AppHandle, end: bool) {
     // never open it in another app.
     #[cfg(target_os = "windows")]
     {
-        if crate::voice::enabled(&app) {
-            crate::applog::info("notes: offline voice to text is on; Win+H not sent");
+        if OFFLINE_STARTED.load(Ordering::SeqCst) {
+            crate::applog::info("notes: offline voice to text was started; Win+H not sent");
         } else if !main_window_in_front(&app) {
             crate::applog::warn("notes: HL Desk not in front; Voice typing left as it is");
         } else if let Err(e) = press_win_h() {

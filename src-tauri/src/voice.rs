@@ -15,7 +15,9 @@ use tauri::{
 struct Status {
     /// This build has offline voice to text (Windows).
     supported: bool,
-    /// The Settings switch.
+    /// Why this PC can't run it (its processor lacks AVX2 and co.), or None.
+    unsupported_reason: Option<&'static str>,
+    /// The Settings switch (false where this PC can't run it).
     enabled: bool,
     /// The model file is on disk.
     installed: bool,
@@ -30,17 +32,17 @@ struct Progress {
     total: u64,
 }
 
-/// True when the Settings switch is on (Windows); notes.rs then records here and never sends Win+H.
+/// True when the Settings switch is on and this PC can run it; notes.rs then records here and
+/// never sends Win+H.
+#[cfg(windows)]
 pub(crate) fn enabled(app: &AppHandle) -> bool {
-    #[cfg(windows)]
-    {
-        crate::settings::offline_voice(app)
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = app;
-        false
-    }
+    imp::cpu_supported() && crate::settings::offline_voice(app)
+}
+
+/// Starts recording from the default microphone (notes.rs notes_dictate, when enabled()).
+#[cfg(windows)]
+pub(crate) fn start(app: &AppHandle) -> Result<(), String> {
+    imp::start(app)
 }
 
 #[tauri::command]
@@ -52,7 +54,14 @@ fn voice_status(app: AppHandle) -> Status {
     #[cfg(not(windows))]
     {
         let _ = app;
-        Status { supported: false, enabled: false, installed: false, downloading: false, total_bytes: 0 }
+        Status {
+            supported: false,
+            unsupported_reason: None,
+            enabled: false,
+            installed: false,
+            downloading: false,
+            total_bytes: 0,
+        }
     }
 }
 
@@ -60,6 +69,9 @@ fn voice_status(app: AppHandle) -> Status {
 fn voice_set_enabled(app: AppHandle, on: bool) -> Result<Status, String> {
     #[cfg(windows)]
     {
+        if on && !imp::cpu_supported() {
+            return Err(imp::CPU_REASON.into());
+        }
         crate::settings::set_offline_voice(&app, on)?;
         crate::applog::info(&format!("voice: offline voice to text {}", if on { "on" } else { "off" }));
         Ok(imp::status(&app))
@@ -99,21 +111,75 @@ async fn voice_stop(app: AppHandle) -> Result<String, String> {
     }
 }
 
-/// Stops the recording and throws it away (the note was closed).
+/// Stops the recording and throws it away (the note was closed, or Stop came while the
+/// microphone was still opening). Async, so it never runs on the main thread.
 #[tauri::command]
-fn voice_cancel() {
+async fn voice_cancel() {
     #[cfg(windows)]
     imp::cancel();
 }
 
-/// Starts recording from the default microphone (notes.rs notes_dictate, when enabled()).
-#[cfg(windows)]
-pub(crate) fn start(app: &AppHandle) -> Result<(), String> {
-    imp::start(app)
-}
-
 pub fn commands() -> impl Fn(Invoke) -> bool + Send + Sync + 'static {
     tauri::generate_handler![voice_status, voice_set_enabled, voice_download, voice_stop, voice_cancel]
+}
+
+/// The recording slot, apart from the audio so its start / stop / cancel races can be tested.
+/// A start takes a ticket (`begin`) and only keeps its recording (`opened`) if no stop or cancel
+/// came while the microphone was opening; a recording that ended by itself is replaced.
+#[cfg_attr(not(windows), allow(dead_code))]
+struct Slot<R> {
+    ticket: u64,
+    starting: Option<u64>,
+    rec: Option<R>,
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+impl<R> Slot<R> {
+    const fn new() -> Self {
+        Slot { ticket: 0, starting: None, rec: None }
+    }
+
+    /// A start may begin: nothing starting, and no recording still running (`finished` says
+    /// whether the one held ended by itself, for example after 120 s). Returns its ticket.
+    fn begin(&mut self, finished: impl FnOnce(&R) -> bool) -> Option<u64> {
+        if self.starting.is_some() {
+            return None;
+        }
+        if let Some(rec) = &self.rec {
+            if !finished(rec) {
+                return None;
+            }
+            self.rec = None;
+        }
+        self.ticket += 1;
+        self.starting = Some(self.ticket);
+        Some(self.ticket)
+    }
+
+    /// The microphone opened: keeps `rec`, or gives it back (to be stopped) when a stop or
+    /// cancel came meanwhile.
+    fn opened(&mut self, ticket: u64, rec: R) -> Result<(), R> {
+        if self.starting == Some(ticket) {
+            self.starting = None;
+            self.rec = Some(rec);
+            Ok(())
+        } else {
+            Err(rec)
+        }
+    }
+
+    /// The start failed or timed out.
+    fn failed(&mut self, ticket: u64) {
+        if self.starting == Some(ticket) {
+            self.starting = None;
+        }
+    }
+
+    /// Stop or cancel: takes the running recording; a start still opening is called off.
+    fn take(&mut self) -> Option<R> {
+        self.starting = None;
+        self.rec.take()
+    }
 }
 
 #[cfg(windows)]
@@ -133,7 +199,7 @@ mod imp {
     };
     use tauri::{ipc::Channel, AppHandle, Manager};
 
-    use super::{Progress, Status};
+    use super::{Progress, Slot, Status};
     use crate::{applog, translate::ModelFile};
 
     /// The model, pinned to one Hugging Face commit of ggerganov/whisper.cpp (licence MIT):
@@ -151,6 +217,7 @@ mod imp {
     /// whisper.cpp skips input shorter than 1 s; shorter recordings are padded with silence.
     const MIN_PCM: usize = 17_600;
 
+    pub const CPU_REASON: &str = "This PC's processor can't run offline voice to text (it needs AVX2).";
     const NO_MIC: &str = "No microphone found. Plug one in, or turn it on in Windows sound settings.";
     const NO_ACCESS: &str =
         "HL Desk can't use the microphone. Turn on Settings > Privacy > Microphone > Let desktop apps access your microphone.";
@@ -158,11 +225,29 @@ mod imp {
         "No sound was recorded. Check the microphone, and Settings > Privacy > Microphone > Let desktop apps access your microphone.";
     const MISSING: &str =
         "The voice model isn't downloaded. Turn on Offline voice to text in Settings to download it.";
+    const STILL_DOWNLOADING: &str = "Offline voice is still downloading (see Settings).";
 
     static DOWNLOADING: AtomicBool = AtomicBool::new(false);
 
     fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         m.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// whisper.cpp is built with GGML_NATIVE=OFF, which still uses AVX, AVX2, FMA, F16C and BMI2
+    /// (CI's system info line); on a processor without them it would crash.
+    pub fn cpu_supported() -> bool {
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        {
+            is_x86_feature_detected!("avx")
+                && is_x86_feature_detected!("avx2")
+                && is_x86_feature_detected!("fma")
+                && is_x86_feature_detected!("f16c")
+                && is_x86_feature_detected!("bmi2")
+        }
+        #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+        {
+            true
+        }
     }
 
     fn model_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -176,9 +261,11 @@ mod imp {
     }
 
     pub fn status(app: &AppHandle) -> Status {
+        let cpu = cpu_supported();
         Status {
             supported: true,
-            enabled: crate::settings::offline_voice(app),
+            unsupported_reason: (!cpu).then_some(CPU_REASON),
+            enabled: cpu && crate::settings::offline_voice(app),
             installed: installed(app),
             downloading: DOWNLOADING.load(Ordering::SeqCst),
             total_bytes: MODEL.size,
@@ -188,6 +275,9 @@ mod imp {
     // ---------- download ----------
 
     pub async fn download(app: &AppHandle, on_progress: Channel<Progress>) -> Result<(), String> {
+        if !cpu_supported() {
+            return Err(CPU_REASON.into());
+        }
         if installed(app) {
             let _ = on_progress.send(Progress { done: MODEL.size, total: MODEL.size });
             return Ok(());
@@ -228,14 +318,19 @@ mod imp {
         rate: u32,
     }
 
-    /// The running recording: its thread owns the cpal stream until `stop` is sent (or
+    /// A recording: its thread owns the cpal stream until `stop` is sent or dropped (or
     /// MAX_RECORDING passes), then sends the samples on `done`.
     struct Recording {
         stop: mpsc::Sender<()>,
         done: mpsc::Receiver<Captured>,
     }
 
-    static RECORDING: Mutex<Option<Recording>> = Mutex::new(None);
+    static RECORDING: Mutex<Slot<Recording>> = Mutex::new(Slot::new());
+
+    /// Its thread has ended (sent its samples or gone): the recording stopped by itself.
+    fn finished(rec: &Recording) -> bool {
+        !matches!(rec.done.try_recv(), Err(mpsc::TryRecvError::Empty))
+    }
 
     /// Turns a cpal error into a message for the user (access denied, no device, or the error).
     fn mic_error(e: &cpal::Error) -> String {
@@ -255,25 +350,27 @@ mod imp {
         }
     }
 
+    /// The input stream; each callback downmixes to mono into `buf`, which was allocated for
+    /// `max` samples up front and is never grown.
     fn build_stream<T>(
         device: &cpal::Device,
         config: cpal::StreamConfig,
         buf: Arc<Mutex<Vec<f32>>>,
+        max: usize,
     ) -> Result<cpal::Stream, cpal::Error>
     where
         T: SizedSample,
         f32: FromSample<T>,
     {
         let channels = config.channels.max(1) as usize;
-        let max = config.sample_rate as usize * (MAX_RECORDING.as_secs() as usize + 1);
         device.build_input_stream::<T, _, _>(
             config,
             move |data: &[T], _| {
                 let mut buf = lock(&buf);
-                if buf.len() >= max {
-                    return;
-                }
                 for frame in data.chunks(channels) {
+                    if buf.len() >= max {
+                        break;
+                    }
                     let sum: f32 = frame.iter().map(|s| f32::from_sample(*s)).sum();
                     buf.push(sum / frame.len() as f32);
                 }
@@ -298,14 +395,15 @@ mod imp {
             config.channels(),
             config.sample_format()
         ));
-        let buf = Arc::new(Mutex::new(Vec::<f32>::with_capacity(rate as usize * 10)));
+        let max = rate as usize * (MAX_RECORDING.as_secs() as usize + 1);
+        let buf = Arc::new(Mutex::new(Vec::<f32>::with_capacity(max)));
         let format = config.sample_format();
         let config: cpal::StreamConfig = config.into();
         let stream = match format {
-            cpal::SampleFormat::F32 => build_stream::<f32>(&device, config, buf.clone()),
-            cpal::SampleFormat::I16 => build_stream::<i16>(&device, config, buf.clone()),
-            cpal::SampleFormat::I32 => build_stream::<i32>(&device, config, buf.clone()),
-            cpal::SampleFormat::U16 => build_stream::<u16>(&device, config, buf.clone()),
+            cpal::SampleFormat::F32 => build_stream::<f32>(&device, config, buf.clone(), max),
+            cpal::SampleFormat::I16 => build_stream::<i16>(&device, config, buf.clone(), max),
+            cpal::SampleFormat::I32 => build_stream::<i32>(&device, config, buf.clone(), max),
+            cpal::SampleFormat::U16 => build_stream::<u16>(&device, config, buf.clone(), max),
             other => return Err(format!("The microphone's sample format ({other}) is not supported.")),
         }
         .map_err(|e| mic_error(&e))?;
@@ -314,14 +412,16 @@ mod imp {
     }
 
     pub fn start(app: &AppHandle) -> Result<(), String> {
+        if !cpu_supported() {
+            return Err(CPU_REASON.into());
+        }
         if !installed(app) {
-            applog::error("voice: model missing");
-            return Err(MISSING.into());
+            let downloading = DOWNLOADING.load(Ordering::SeqCst);
+            applog::error(&format!("voice: model missing (downloading: {downloading})"));
+            return Err(if downloading { STILL_DOWNLOADING } else { MISSING }.into());
         }
-        let mut slot = lock(&RECORDING);
-        if slot.is_some() {
-            return Err("Already listening.".into());
-        }
+        // The lock is held only for these quick steps, never while the microphone opens.
+        let ticket = lock(&RECORDING).begin(finished).ok_or("Already listening.")?;
         let (stop_tx, stop_rx) = mpsc::channel::<()>();
         let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
         let (done_tx, done_rx) = mpsc::channel::<Captured>();
@@ -334,6 +434,7 @@ mod imp {
                 }
             };
             let _ = ready_tx.send(Ok(()));
+            // Stop sent, or the Recording dropped (start timed out or was called off): stop now.
             if let Err(mpsc::RecvTimeoutError::Timeout) = stop_rx.recv_timeout(MAX_RECORDING) {
                 applog::info("voice: recording reached 120 s and stopped");
             }
@@ -341,19 +442,35 @@ mod imp {
             let samples = std::mem::take(&mut *lock(&buf));
             let _ = done_tx.send(Captured { samples, rate });
         });
+        let rec = Recording { stop: stop_tx, done: done_rx };
         match ready_rx.recv_timeout(Duration::from_secs(10)) {
-            Ok(Ok(())) => {
-                *slot = Some(Recording { stop: stop_tx, done: done_rx });
-                applog::info("voice: recording");
-                Ok(())
+            Ok(Ok(())) => match lock(&RECORDING).opened(ticket, rec) {
+                Ok(()) => {
+                    applog::info("voice: recording");
+                    Ok(())
+                }
+                Err(rec) => {
+                    let _ = rec.stop.send(());
+                    applog::info("voice: stopped while the microphone was opening");
+                    Err("Stopped.".into())
+                }
+            },
+            Ok(Err(e)) => {
+                lock(&RECORDING).failed(ticket);
+                Err(e)
             }
-            Ok(Err(e)) => Err(e),
-            Err(_) => Err("The microphone did not start.".into()),
+            Err(_) => {
+                lock(&RECORDING).failed(ticket);
+                let _ = rec.stop.send(());
+                applog::error("voice: the microphone did not open within 10 s");
+                Err("The microphone did not start.".into())
+            }
         }
     }
 
     pub fn cancel() {
-        if let Some(rec) = lock(&RECORDING).take() {
+        let rec = lock(&RECORDING).take();
+        if let Some(rec) = rec {
             let _ = rec.stop.send(());
             applog::info("voice: recording cancelled");
         }
@@ -480,6 +597,59 @@ pub fn transcribe_with(
     Ok((text.trim().to_string(), lang))
 }
 
+/// The recording slot's races (pure; runs on every platform).
+#[cfg(test)]
+mod slot_tests {
+    use super::Slot;
+
+    #[test]
+    fn one_start_at_a_time() {
+        let mut slot: Slot<&str> = Slot::new();
+        let t = slot.begin(|_| false).expect("first start");
+        assert!(slot.begin(|_| false).is_none(), "a second start while opening");
+        assert!(slot.opened(t, "rec").is_ok());
+        assert!(slot.begin(|_| false).is_none(), "a start while recording");
+        assert_eq!(slot.take(), Some("rec"));
+        assert!(slot.begin(|_| false).is_some(), "a start after stop");
+    }
+
+    #[test]
+    fn stop_while_opening_calls_the_start_off() {
+        let mut slot: Slot<&str> = Slot::new();
+        let t = slot.begin(|_| false).unwrap();
+        assert_eq!(slot.take(), None, "nothing recorded yet");
+        assert_eq!(slot.opened(t, "rec"), Err("rec"), "the opened recording is handed back to stop");
+        assert!(slot.begin(|_| false).is_some(), "not stuck");
+    }
+
+    #[test]
+    fn a_stale_start_cannot_take_a_newer_slot() {
+        let mut slot: Slot<&str> = Slot::new();
+        let old = slot.begin(|_| false).unwrap();
+        slot.take();
+        let new = slot.begin(|_| false).unwrap();
+        assert_eq!(slot.opened(old, "old"), Err("old"));
+        assert!(slot.opened(new, "new").is_ok());
+    }
+
+    #[test]
+    fn failed_start_frees_the_slot() {
+        let mut slot: Slot<&str> = Slot::new();
+        let t = slot.begin(|_| false).unwrap();
+        slot.failed(t);
+        assert!(slot.begin(|_| false).is_some());
+    }
+
+    #[test]
+    fn a_recording_that_ended_by_itself_is_replaced() {
+        let mut slot: Slot<&str> = Slot::new();
+        let t = slot.begin(|_| false).unwrap();
+        slot.opened(t, "rec").unwrap();
+        assert!(slot.begin(|_| true).is_some());
+        assert_eq!(slot.take(), None, "the ended recording was dropped");
+    }
+}
+
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
@@ -510,6 +680,12 @@ mod tests {
         assert!(is_noise(" [BLANK_AUDIO]"));
         assert!(is_noise("(music)"));
         assert!(!is_noise(" Call the supplier."));
+    }
+
+    #[test]
+    fn cpu_check_runs() {
+        // CI's runner has AVX2; the check itself must not panic.
+        eprintln!("voice: cpu supported = {}", imp::cpu_supported());
     }
 
     fn read_wav(path: &Path) -> Vec<f32> {

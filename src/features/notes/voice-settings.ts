@@ -4,7 +4,15 @@
 // src-tauri/src/voice.rs (the switch is stored in settings.json). Notes uses it: index.ts.
 import { Channel, invoke } from "@tauri-apps/api/core";
 
-type VoiceStatus = { supported: boolean; enabled: boolean; installed: boolean; downloading: boolean; totalBytes: number };
+type VoiceStatus = {
+  supported: boolean;
+  /** Why this PC can't run it (no AVX2), or null. */
+  unsupportedReason: string | null;
+  enabled: boolean;
+  installed: boolean;
+  downloading: boolean;
+  totalBytes: number;
+};
 
 const MB = 1_000_000;
 const HINT = "English. Downloads 148 MB once, then works without internet.";
@@ -51,7 +59,8 @@ export function mountVoiceSettings(el: HTMLElement): void {
     try {
       await invoke("voice_download", { onProgress: channel });
       log("info", "model downloaded");
-      hint.textContent = "Downloaded. Dictate in Notes now works without internet.";
+      // Turned off while it downloaded: no "works without internet" line while off.
+      hint.textContent = sw.checked ? "Downloaded. Dictate in Notes now works without internet." : HINT;
     } catch (e) {
       log("error", `model download: ${e}`);
       hint.textContent = HINT;
@@ -64,6 +73,13 @@ export function mountVoiceSettings(el: HTMLElement): void {
   function show(s: VoiceStatus): void {
     el.hidden = !s.supported;
     sw.checked = s.enabled;
+    // This PC's processor can't run it: the switch stays off, with the reason.
+    sw.disabled = s.unsupportedReason !== null;
+    if (s.unsupportedReason !== null) {
+      hint.textContent = s.unsupportedReason;
+      showError(null);
+      return;
+    }
     if (downloading) return;
     if (s.enabled && !s.installed && !s.downloading) {
       hint.textContent = HINT;

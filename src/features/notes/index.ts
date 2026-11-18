@@ -412,6 +412,10 @@ export function mount(el: HTMLElement): void {
   let offline = false;
   /** An offline recording is being written down. */
   let writing = false;
+  /** A start is under way (status check, or the offline microphone opening). */
+  let starting = false;
+  /** Stop, Esc or closing the note came while the offline microphone was opening. */
+  let stopWhileOpening = false;
 
   async function refreshOffline(): Promise<boolean> {
     if (isMac) return false;
@@ -462,6 +466,11 @@ export function mount(el: HTMLElement): void {
     clearTimeout(quietTimer);
     if (!dictating) return;
     if (offline) {
+      // Still opening the microphone: startOffline calls it off once notes_dictate answers.
+      if (starting) {
+        stopWhileOpening = true;
+        return;
+      }
       // Stop / Esc: write it down. The note closed: throw the recording away.
       if (end) void finishOffline();
       else cancelOffline();
@@ -475,6 +484,8 @@ export function mount(el: HTMLElement): void {
 
   async function startDictation(): Promise<void> {
     if (!draft || editorView.hidden || voice?.available === false) return;
+    // One start at a time: a double click or Ctrl+Shift+D while a start is under way does nothing.
+    if (writing || starting || dictating) return;
     // Focus the note at the cursor (the click on the mic must not move it).
     const { selectionStart, selectionEnd } = textarea;
     textarea.focus();
@@ -487,9 +498,15 @@ export function mount(el: HTMLElement): void {
       renderVoice();
       return;
     }
-    if (writing) return;
-    if (await refreshOffline()) return startOffline();
-    if (!draft || editorView.hidden) return;
+    starting = true;
+    let useOffline = false;
+    try {
+      useOffline = await refreshOffline();
+    } finally {
+      starting = false;
+    }
+    if (!draft || editorView.hidden || dictating) return;
+    if (useOffline) return startOffline();
     dictating = true;
     renderVoice();
     log("info", "dictation requested");
@@ -528,15 +545,31 @@ export function mount(el: HTMLElement): void {
   // background thread and the text goes in at the cursor (the input event runs autosave).
 
   async function startOffline(): Promise<void> {
-    if (!draft || editorView.hidden) return;
+    const d = draft;
+    if (!d || editorView.hidden) return;
     offline = true;
     dictating = true;
+    starting = true;
+    stopWhileOpening = false;
     status.textContent = "";
     renderVoice();
     log("info", "offline voice to text: start");
+    let failed: unknown = null;
     try {
       await api.dictate();
     } catch (e) {
+      failed = e ?? "unknown error";
+    } finally {
+      starting = false;
+    }
+    if (failed === null && (stopWhileOpening || draft !== d || editorView.hidden)) {
+      // Stop, Esc or closing the note came while the microphone was opening.
+      log("info", "offline voice to text: stopped while the microphone was opening");
+      cancelOffline();
+      return;
+    }
+    if (failed !== null) {
+      const e = failed;
       log("error", `offline voice to text: ${e}`);
       status.textContent = String(e);
       dictating = false;
