@@ -2,6 +2,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { icon, type IconName } from "../../icons";
 import { pngUrl } from "../../png-url";
 import "./clipboard.css";
 
@@ -25,12 +26,14 @@ interface Item {
 }
 
 /** Filter chips under the search: "" is All. */
-const FILTERS: [Kind | "", string][] = [
-  ["", "All"],
-  ["text", "Text"],
-  ["image", "Images"],
-  ["files", "Files"],
+const FILTERS: [Kind | "", string, IconName][] = [
+  ["", "All", "grid"],
+  ["text", "Text", "text"],
+  ["image", "Images", "image"],
+  ["files", "Files", "file"],
 ];
+/** A text item that is just one web address gets the link tile. */
+const LINK = /^(https?:\/\/|www\.)\S+$/i;
 
 const EMPTY: Record<Kind | "", string> = {
   "": "Copy text, an image or files and it shows up here.",
@@ -78,10 +81,10 @@ function extension(name: string): string {
 
 export function mount(el: HTMLElement): void {
   el.innerHTML = `
-    <div class="toolbar"><input class="field" type="search" placeholder="Search clipboard" aria-label="Search clipboard" spellcheck="false" /></div>
+    <div class="toolbar"><label class="search-field">${icon("search")}<input class="field" type="search" placeholder="Search clipboard" aria-label="Search clipboard" spellcheck="false" /></label></div>
     <div class="cb-chips" role="group" aria-label="Show">${FILTERS.map(
-      ([kind, label]) =>
-        `<button type="button" class="cb-chip" data-kind="${kind}" aria-pressed="${kind === ""}">${label}</button>`,
+      ([kind, label, ico]) =>
+        `<button type="button" class="cb-chip" data-kind="${kind}" aria-pressed="${kind === ""}">${icon(ico, 12)}${label}</button>`,
     ).join("")}</div>
     <ul class="scroll cb-list" role="listbox" aria-label="Clipboard history"></ul>
     <div class="undo-bar" role="status" hidden>
@@ -113,6 +116,8 @@ export function mount(el: HTMLElement): void {
   let filter: Kind | "" = "";
   /** Thumbnail object URLs by item id, made once per image. */
   const thumbs = new Map<number, Promise<string>>();
+  /** The next render follows a search or filter change: the list fades in once. */
+  let fadeNext = false;
 
   function timeLeft(item: Item): string {
     if (item.pinned) return "Pinned";
@@ -125,6 +130,12 @@ export function mount(el: HTMLElement): void {
 
   function render(): void {
     list.replaceChildren();
+    if (fadeNext) {
+      fadeNext = false;
+      list.classList.remove("cb-fade");
+      void list.offsetWidth; // restarts the animation
+      list.classList.add("cb-fade");
+    }
     if (items.length === 0) {
       const empty = document.createElement("li");
       empty.className = "empty";
@@ -215,8 +226,12 @@ export function mount(el: HTMLElement): void {
       }
       return { nodes: [tile, text], title: item.files.join("\n") };
     }
+    // Text and link rows: a tile the size of an image thumbnail, so every row's text lines up.
+    const tile = document.createElement("span");
+    tile.className = "cb-tile";
+    tile.innerHTML = icon(LINK.test(item.text.trim()) ? "link" : "text");
     text.textContent = item.text;
-    return { nodes: [text], title: item.text.length > 500 ? item.text.slice(0, 500) + "..." : item.text };
+    return { nodes: [tile, text], title: item.text.length > 500 ? item.text.slice(0, 500) + "..." : item.text };
   }
 
   function thumbUrl(id: number): Promise<string> {
@@ -241,6 +256,7 @@ export function mount(el: HTMLElement): void {
   function setFilter(kind: Kind | ""): void {
     if (kind === filter) return;
     filter = kind;
+    fadeNext = true;
     for (const chip of chips) chip.setAttribute("aria-pressed", String(chip.dataset.kind === kind));
     selected = 0;
     void refresh();
@@ -408,6 +424,7 @@ export function mount(el: HTMLElement): void {
 
   search.addEventListener("input", () => {
     selected = 0;
+    // No fade while typing a search: it would restart on every key (filters still fade).
     void refresh();
   });
 

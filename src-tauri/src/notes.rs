@@ -181,6 +181,8 @@ fn notes_delete(store: State<'_, Store>, id: i64) -> Result<(), String> {
 }
 
 // ---- Voice to text: the computer's own dictation (no cloud API, no model in the app) ----
+// Windows with Settings > Voice to text > Offline mode on: voice.rs records and transcribes in the app
+// instead, and Win+H is never sent.
 //
 // Windows: Win+H opens Voice typing, which types into the focused field (the note's textarea).
 // macOS: the standard startDictation: action, sent through NSApplication with the textarea focused.
@@ -189,6 +191,13 @@ fn notes_delete(store: State<'_, Store>, id: i64) -> Result<(), String> {
 
 /// How long the popover stays open after the mic is clicked, unless it is stopped first.
 const DICTATION_KEEP_OPEN_MS: i64 = 60_000;
+/// Offline voice to text: up to 120 s of recording, then the time to write it down.
+#[cfg(target_os = "windows")]
+const OFFLINE_KEEP_OPEN_MS: i64 = 180_000;
+/// The last dictation started was offline voice to text (so stopping it never sends Win+H, even
+/// if the Settings switch changed since).
+#[cfg(target_os = "windows")]
+static OFFLINE_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// Until when (Unix ms) the popover ignores focus loss. 0: not dictating.
 static DICTATING_UNTIL: AtomicI64 = AtomicI64::new(0);
 
@@ -352,6 +361,23 @@ fn send_mac_dictation(app: &AppHandle, action: objc2::runtime::Sel) -> Result<bo
 /// window is in front, so Voice typing can only type into the note.
 #[tauri::command]
 async fn notes_dictate(app: AppHandle) -> Result<bool, String> {
+    // Offline voice to text: record from the default microphone (voice.rs); the page stops it
+    // with voice_stop and inserts the text itself.
+    #[cfg(target_os = "windows")]
+    OFFLINE_STARTED.store(crate::voice::enabled(&app), Ordering::SeqCst);
+    #[cfg(target_os = "windows")]
+    if OFFLINE_STARTED.load(Ordering::SeqCst) {
+        DICTATING_UNTIL.store(now_ms() + OFFLINE_KEEP_OPEN_MS, Ordering::SeqCst);
+        let result = crate::voice::start(&app);
+        match &result {
+            Ok(()) => crate::applog::info("notes: offline voice to text started"),
+            Err(e) => {
+                crate::applog::error(&format!("notes: could not start offline voice to text: {e}"));
+                DICTATING_UNTIL.store(0, Ordering::SeqCst);
+            }
+        }
+        return result.map(|()| true);
+    }
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.set_focus();
     }
@@ -397,7 +423,9 @@ async fn notes_dictation_stop(app: AppHandle, end: bool) {
     // never open it in another app.
     #[cfg(target_os = "windows")]
     {
-        if !main_window_in_front(&app) {
+        if OFFLINE_STARTED.load(Ordering::SeqCst) {
+            crate::applog::info("notes: offline voice to text was started; Win+H not sent");
+        } else if !main_window_in_front(&app) {
             crate::applog::warn("notes: HL Desk not in front; Voice typing left as it is");
         } else if let Err(e) = press_win_h() {
             crate::applog::error(&format!("notes: could not stop Voice typing: {e}"));

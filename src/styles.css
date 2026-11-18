@@ -14,6 +14,13 @@
   --radius: 10px;
   --radius-sm: 8px;
   --inset: 12px;
+  /* Motion: one easing curve and three durations for every transition (none over 220 ms). */
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --dur-fast: 120ms;
+  --dur: 150ms;
+  --dur-slow: 200ms;
+  /* The one soft shadow: selected tab pill, capture card and sheets only. */
+  --shadow-soft: 0 1px 2px rgb(11 18 32 / 6%), 0 4px 12px rgb(11 18 32 / 6%);
   font-family: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "PingFang TC", "Segoe UI", sans-serif;
   font-size: 13px;
   line-height: 1.4;
@@ -24,7 +31,7 @@
 html, body { margin: 0; height: 100%; overflow: hidden; background: var(--surface); color: var(--ink); }
 body { display: flex; flex-direction: column; position: relative; }
 button, input, textarea, select { font: inherit; color: inherit; }
-:focus-visible { outline: 2px solid var(--indigo); outline-offset: 1px; }
+:focus-visible { outline: 2px solid var(--indigo); outline-offset: 2px; }
 kbd { font: inherit; }
 
 /* The popover has no system title bar (tauri.conf.json), so the body draws the frame. */
@@ -43,29 +50,50 @@ body.popover { border: 1px solid var(--border); }
 .pin-btn[aria-pressed="true"] { background: var(--indigo-tint); color: var(--indigo); }
 .pin-btn[aria-pressed="true"] path { fill: currentColor; }
 
-/* Segmented control: Clipboard, Screenshot, Notes. */
+/* Segmented control: Clipboard, Screenshot, Notes, each with its icon (indigo when selected).
+   The selected pill is one element that slides under the chosen tab (main.ts sets --tab). */
 .segmented {
-  display: flex; flex: none; gap: 2px; margin: 4px var(--inset) 0; padding: 2px;
+  position: relative; display: flex; flex: none; gap: 2px; margin: 4px var(--inset) 0; padding: 2px;
   background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
 }
+.segmented-pill {
+  position: absolute; top: 2px; bottom: 2px; left: 2px; width: calc((100% - 8px) / 3);
+  border-radius: var(--radius-sm); background: var(--surface);
+  box-shadow: 0 0 0 1px var(--border), var(--shadow-soft);
+  transform: translateX(calc(var(--tab, 0) * (100% + 2px)));
+  transition: transform var(--dur-slow) var(--ease);
+  pointer-events: none;
+}
 .segmented button {
-  flex: 1; padding: 5px 0; border: 0; border-radius: var(--radius-sm); background: none;
-  color: var(--muted); cursor: pointer;
+  position: relative; flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 5px 0; border: 0; border-radius: var(--radius-sm); background: none;
+  color: var(--muted); cursor: pointer; transition: color var(--dur-fast) var(--ease);
 }
 .segmented button:hover { color: var(--ink); }
-.segmented button[aria-selected="true"] { background: var(--surface); color: var(--ink); font-weight: 500; box-shadow: 0 0 0 1px var(--border); }
+.segmented button[aria-selected="true"] { color: var(--ink); font-weight: 500; }
+.segmented .ico { transition: color var(--dur-fast) var(--ease); }
+.segmented button[aria-selected="true"] .ico { color: var(--indigo); }
 
 /* Each panel is a column: .toolbar on top, .scroll in the middle, .footer pinned to the bottom.
    The toolbar and scroll inset their content 12px each side; the footer runs the full width.
    No negative margins anywhere: nothing relies on padding from a parent. */
 main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 [role="tabpanel"] { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+/* A panel shown again fades in with a 4px rise (CSS animations restart when display returns). */
+[role="tabpanel"]:not([hidden]) { animation: rise-in var(--dur) var(--ease); }
+@keyframes rise-in { from { opacity: 0; transform: translateY(4px); } }
+@keyframes fade-in { from { opacity: 0; } }
+/* Icons (src/icons.ts) sit on the text's optical centre in inline-flex rows. */
+.ico { flex: none; display: block; }
 
 /* ---- Shared classes for features (documented in README, Architecture) ---- */
 .btn, .btn-primary {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
   height: 30px; padding: 0 12px; border-radius: var(--radius); cursor: pointer; white-space: nowrap;
+  transition: background-color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
 }
+.btn:active:not(:disabled), .btn-primary:active:not(:disabled), .icon-btn:active { transform: scale(0.98); }
 .btn { border: 1px solid var(--border); background: var(--surface); color: var(--ink); }
 .btn:hover { background: var(--bg); }
 .btn-primary { border: 1px solid var(--indigo); background: var(--indigo); color: #fff; font-weight: 500; }
@@ -74,6 +102,8 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .icon-btn {
   display: inline-flex; flex: none; align-items: center; justify-content: center; width: 28px; height: 28px;
   padding: 0; border: 0; border-radius: var(--radius-sm); background: none; color: var(--muted); cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
+    transform var(--dur-fast) var(--ease);
 }
 .icon-btn:hover { background: var(--bg); color: var(--ink); }
 .field {
@@ -83,6 +113,12 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 textarea.field { height: auto; padding: 8px 10px; resize: none; }
 .field::placeholder { color: var(--muted); }
 .field:focus { border-color: var(--indigo); box-shadow: 0 0 0 3px var(--indigo-tint); }
+/* Search field with its icon inside, left: <label class="search-field">icon + input.field</label>. */
+.search-field { position: relative; display: block; flex: 1; min-width: 0; }
+.search-field .ico {
+  position: absolute; left: 10px; top: 50%; color: var(--muted); transform: translateY(-50%); pointer-events: none;
+}
+.search-field .field { padding-left: 30px; }
 /* Compact select for footer settings, without the raw OS look. The chevron is drawn in --muted. */
 .select {
   height: 26px; padding: 0 24px 0 8px; border: 1px solid var(--border); border-radius: var(--radius-sm);
@@ -100,6 +136,7 @@ textarea.field { height: auto; padding: 8px 10px; resize: none; }
 .row {
   position: relative; display: block; width: 100%; padding: 8px 10px; border: 0; border-radius: var(--radius-sm);
   background: none; font-size: 12px; text-align: left; cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease);
 }
 /* A thin line in the gap between rows, inset like the row text, so the highlight stays rounded. */
 .row + .row { margin-top: 3px; }
@@ -122,6 +159,11 @@ textarea.field { height: auto; padding: 8px 10px; resize: none; }
   display: flex; flex: none; align-items: center; gap: 6px; margin: 0 var(--inset) var(--inset); padding: 8px 12px;
   border-radius: var(--radius); background: var(--ink); color: #fff; font-size: 12px;
 }
+/* Undo bar and toast fade in and out. Hidden, they stay drawn only for the fade (display is
+   discrete) and take no clicks. */
+.undo-bar, .toast { transition: opacity var(--dur) var(--ease), display var(--dur) allow-discrete; }
+.undo-bar[hidden], .toast[hidden] { opacity: 0; pointer-events: none; }
+@starting-style { .undo-bar:not([hidden]), .toast:not([hidden]) { opacity: 0; } }
 .undo-bar button {
   margin-left: auto; padding: 0; border: 0; background: none; color: #fff; font-weight: 500;
   text-decoration: underline; cursor: pointer;
@@ -154,6 +196,15 @@ textarea.field { height: auto; padding: 8px 10px; resize: none; }
 
 /* Settings sheet: covers the whole popover, with the same insets and footer as the tabs. */
 .sheet { position: absolute; inset: 0; z-index: 10; display: flex; flex-direction: column; background: var(--surface); }
+/* Sheets (Settings, welcome, What's new): fade and 8px slide up on open, a quick fade on close.
+   Hidden, a sheet stays drawn only for the fade and takes no clicks. */
+.sheet, .welcome {
+  box-shadow: var(--shadow-soft);
+  transition: opacity var(--dur-slow) var(--ease), transform var(--dur-slow) var(--ease),
+    display var(--dur-slow) allow-discrete;
+}
+.sheet[hidden], .welcome[hidden] { opacity: 0; pointer-events: none; transition-duration: var(--dur-fast); }
+@starting-style { .sheet:not([hidden]), .welcome:not([hidden]) { opacity: 0; transform: translateY(8px); } }
 .sheet-head {
   display: flex; flex: none; align-items: center; justify-content: space-between;
   padding: 8px 8px 4px var(--inset); cursor: default; user-select: none; -webkit-user-select: none;
@@ -161,8 +212,10 @@ textarea.field { height: auto; padding: 8px 10px; resize: none; }
 .sheet-head h2 { margin: 0; font-size: 13px; font-weight: 600; }
 .sheet-body { flex: 1; min-height: 0; overflow-y: auto; padding: 0 var(--inset) var(--inset); }
 .sheet-section {
+  display: flex; align-items: center; gap: 6px;
   margin: 12px 0 2px; font-size: 11px; font-weight: 500; letter-spacing: 0.5px; text-transform: uppercase; color: var(--muted);
 }
+.sheet-section .ico { width: 13px; height: 13px; color: var(--indigo); }
 .setting {
   display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 40px;
   padding: 4px 0; border-bottom: 1px solid var(--border); font-size: 12px; cursor: default;
@@ -244,3 +297,8 @@ label.setting { cursor: pointer; }
 /* The Screen Recording card (src/features/screenshot/permission.css draws it). */
 .welcome-perm { margin-top: 10px; }
 .welcome-actions { display: flex; gap: 6px; }
+
+/* Reduced motion: no slides, fades or loops anywhere (the voice bars and dots stand still). */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}

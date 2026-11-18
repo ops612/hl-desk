@@ -1,9 +1,23 @@
-/* Screenshot only. Tokens and shared classes (.toolbar, .btn-primary, .scroll, .footer, .hint)
+/* Screenshot only. Tokens and shared classes (.btn-primary, .keycap, .scroll, .footer, .hint)
    come from src/styles.css. */
-.toolbar.shot-top { flex-direction: column; align-items: stretch; gap: 6px; padding-bottom: 8px; }
-.btn-primary.shot-capture { width: 100%; height: 36px; }
-.shot-hint { margin: 0; text-align: center; }
-.shot-top kbd, .shot-empty kbd {
+/* Capture card: dashed indigo-tinted border, very light indigo, centred; the one indigo button. */
+.shot-card-capture {
+  display: flex; flex: none; flex-direction: column; align-items: center; margin: var(--inset); padding: 16px;
+  border: 1px dashed rgb(47 76 200 / 35%); border-radius: var(--radius); background: rgb(47 76 200 / 3%);
+  box-shadow: var(--shadow-soft); text-align: center;
+}
+.shot-tile {
+  display: flex; align-items: center; justify-content: center; width: 40px; height: 40px; margin-bottom: 8px;
+  border-radius: var(--radius); background: var(--indigo-tint); color: var(--indigo);
+  transition: transform var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+.shot-card-capture:hover .shot-tile { transform: translateY(-2px); box-shadow: var(--shadow-soft); }
+.shot-title { margin: 0; font-weight: 500; }
+.shot-sub { margin: 2px 0 0; }
+.shot-row { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 16px; }
+.shot-keys { display: inline-flex; align-items: center; white-space: nowrap; }
+.shot-or { margin: 0 6px; color: var(--muted); font-size: 11px; }
+.shot-empty kbd {
   padding: 1px 5px; border: 1px solid var(--border); border-radius: 4px;
   background: var(--bg); color: var(--ink); font-size: 11px;
 }

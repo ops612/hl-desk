@@ -7,6 +7,10 @@ body.tr-page {
   user-select: none; -webkit-user-select: none; cursor: default;
 }
 .tr-card { display: flex; flex: none; flex-direction: column; }
+/* Appearing: the card's parts fade in from 0.98 (children only, so the height main.ts measures
+   from #card is never scaled; the native window itself is not animated). */
+.tr-card.tr-in > * { transform-origin: top center; animation: tr-in var(--dur) var(--ease); }
+@keyframes tr-in { from { opacity: 0; transform: scale(0.98); } }
 .tr-head {
   display: flex; flex: none; align-items: center; justify-content: space-between;
   padding: 6px 6px 2px var(--inset);

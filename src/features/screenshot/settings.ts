@@ -3,6 +3,7 @@
 // Rust side: screenshot_capture_settings / screenshot_set_capture_key / screenshot_set_markup /
 // screenshot_open_key_settings in src-tauri/src/screenshot.rs (stored in settings.json).
 import { invoke } from "@tauri-apps/api/core";
+import { icon } from "../../icons";
 import "./settings.css";
 
 /** "off" | "ok" | "owned" (the system still uses the key) | "check" (could not tell) | "failed". */
@@ -46,7 +47,7 @@ function note(state: DeviceKey): string {
 
 export function mountCaptureSettings(el: HTMLElement): void {
   el.innerHTML = `
-    <h3 class="sheet-section">Capture</h3>
+    <h3 class="sheet-section">${icon("crop")}Capture</h3>
     <div class="setting">
       <span>Capture key</span>
       <select class="select cap-key" aria-label="Capture key">

@@ -1,7 +1,7 @@
 //! App settings shared by the shell (not by one feature): <app data>/settings.json holds
 //! "welcome seen", the screenshot capture settings (capture key, mark up after a device
 //! screenshot; changed through screenshot.rs commands) and the translate card's last language
-//! picks (translate.rs). Open at login is kept by the OS itself (tauri-plugin-autostart: a LaunchAgent
+//! picks (translate.rs) and the offline voice to text switch (voice.rs, Windows). Open at login is kept by the OS itself (tauri-plugin-autostart: a LaunchAgent
 //! on macOS, the HKCU Run key on Windows), so it is always read from there, never stored here.
 //! Commands are named "settings_<name>" and routed here by lib.rs.
 
@@ -27,6 +27,9 @@ struct Stored {
     /// Translate card: the language pair last picked by hand, per source script ("han",
     /// "latin"), e.g. {"han": "zh-Hans-en"}. Used by translate.rs.
     translate_picks: BTreeMap<String, String>,
+    /// Offline voice to text (voice.rs, Windows): the Notes mic records and transcribes in the app
+    /// instead of Windows Voice typing. Off by default.
+    offline_voice: bool,
 }
 
 impl Default for Stored {
@@ -36,6 +39,7 @@ impl Default for Stored {
             capture_key: "default".into(),
             markup_after_shot: !cfg!(target_os = "macos"),
             translate_picks: BTreeMap::new(),
+            offline_voice: false,
         }
     }
 }
@@ -90,6 +94,9 @@ fn load(app: &AppHandle) -> Stored {
                 .iter()
                 .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
                 .collect();
+        }
+        if let Some(v) = obj.get("offlineVoice").and_then(|v| v.as_bool()) {
+            stored.offline_voice = v;
         }
         applog::warn("settings: kept the values that could be read");
         return stored;
@@ -162,6 +169,17 @@ pub fn set_translate_pick(app: &AppHandle, script: &str, pair: &str) -> Result<(
     update(app, |s| {
         s.translate_picks.insert(script.to_string(), pair.to_string());
     })
+}
+
+/// Offline voice to text on (Windows); read by voice.rs.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn offline_voice(app: &AppHandle) -> bool {
+    load(app).offline_voice
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn set_offline_voice(app: &AppHandle, on: bool) -> Result<(), String> {
+    update(app, |s| s.offline_voice = on)
 }
 
 #[derive(Serialize)]

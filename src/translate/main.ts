@@ -100,7 +100,13 @@ async function report(): Promise<void> {
   const border = document.body.offsetHeight - document.body.clientHeight;
   const height = Math.ceil(card.getBoundingClientRect().height + border);
   await invoke("translate_card_show", { height }).catch((e) => log("error", `show: ${describe(e)}`));
-  if (!shownAt) shownAt = Date.now();
+  if (!shownAt) {
+    shownAt = Date.now();
+    // The content (not the window) fades in from 0.98 each time the card appears (translate.css).
+    card.classList.remove("tr-in");
+    void card.offsetWidth;
+    card.classList.add("tr-in");
+  }
 }
 
 function hide(): void {

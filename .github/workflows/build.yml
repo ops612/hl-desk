@@ -175,6 +175,24 @@ jobs:
     name: Windows (NSIS installer, unsigned)
     runs-on: windows-latest
     timeout-minutes: 60
+    env:
+      # whisper.cpp (voice.rs; whisper-rs-sys passes GGML_* to cmake): not tuned to the runner's
+      # CPU, and AVX + F16C only (MSVC /arch:AVX), so it runs on Ivy Bridge PCs: no AVX2, FMA,
+      # BMI2 or AVX512. MSVC has no F16C switch and ggml only assumes F16C with AVX2, so
+      # __F16C__ comes in through CFLAGS/CXXFLAGS (cc, and so cmake-rs, read them); without it
+      # fp16 weights convert one by one (about 13x slower in CI). voice.rs cpu_supported()
+      # checks the same at run time, and a test checks the build. Changing these needs a new
+      # rust-cache key below, as whisper-rs-sys does not rebuild on env changes. "-D", not
+      # "/D": Git Bash would rewrite a value starting with "/" as a path.
+      GGML_NATIVE: "OFF"
+      GGML_AVX: "ON"
+      GGML_AVX2: "OFF"
+      GGML_FMA: "OFF"
+      GGML_F16C: "ON"
+      GGML_BMI2: "OFF"
+      GGML_AVX512: "OFF"
+      CFLAGS: "-D__F16C__"
+      CXXFLAGS: "-D__F16C__"
     steps:
       - uses: actions/checkout@v4
 
@@ -188,6 +206,8 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          # Bump with the GGML_* flags above.
+          key: ggml-avx-f16c1
 
       - run: npm ci
 
@@ -219,6 +239,30 @@ jobs:
           retention-days: 14
           compression-level: 0
 
-      # Rust unit tests (after the build, so ../dist exists for generate_context!).
+      # The offline voice model for the voice test (voice.rs), from the pinned URL in voice.rs,
+      # checked against its pinned sha256; cached between runs.
+      - name: Cache the voice model
+        uses: actions/cache@v4
+        with:
+          path: ~/whisper-models
+          key: whisper-ggml-base.en-a03779c8
+
+      - name: Download the voice model
+        shell: bash
+        run: |
+          set -euo pipefail
+          url=$(grep -o 'https://huggingface.co/[^"]*ggml-base.en.bin' src-tauri/src/voice.rs | head -n 1)
+          sha=$(grep -A5 'pub const MODEL: ModelFile' src-tauri/src/voice.rs | grep -oE '[0-9a-f]{64}' | head -n 1)
+          [ -n "$url" ] && [ -n "$sha" ] || { echo "::error::MODEL_URL or sha256 not found in voice.rs"; exit 1; }
+          mkdir -p ~/whisper-models
+          f=~/whisper-models/ggml-base.en.bin
+          [ -s "$f" ] || curl -fsSL -o "$f" "$url"
+          echo "$sha  $f" | sha256sum -c -
+
+      # Rust unit tests (after the build, so ../dist exists for generate_context!), including a
+      # real whisper run on src-tauri/tests/fixtures/voice-en.wav.
       - name: Rust unit tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+        shell: bash
+        run: |
+          export HL_WHISPER_MODELS="$(cygpath -w "$HOME/whisper-models")"
+          cargo test --manifest-path src-tauri/Cargo.toml --lib -- --nocapture

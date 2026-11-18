@@ -68,4 +68,9 @@ Mac-first release (0.1.7): leave out `--win` in step 4 and upload the previous r
 in step 5, so the Windows download link keeps working. Windows copies then show "Could not check for
 updates" until a release with a Windows entry is latest.
 
+Uploads can time out (HTTP 408). Create the release with `--draft`, upload each file with
+`gh release upload v$v -R ops612/hl-desk-releases --clobber <file>` (retry on failure), check the sizes,
+then publish with `gh release edit v$v -R ops612/hl-desk-releases --draft=false --latest`. The latest
+release must never be missing latest.json.
+
 If the page text changes, edit `site/index.html` here and copy it to the releases repo's `index.html`.

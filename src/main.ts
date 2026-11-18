@@ -7,9 +7,11 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import * as clipboard from "./features/clipboard";
 import * as notes from "./features/notes";
+import { mountVoiceSettings } from "./features/notes/voice-settings";
 import * as screenshot from "./features/screenshot";
 import { mountPermission } from "./features/screenshot/permission";
 import { mountCaptureSettings } from "./features/screenshot/settings";
+import { fillIcons } from "./icons";
 import { openReleaseNotes, startUpdater } from "./updater";
 
 // Each feature owns its folder and exports mount(el). A tab mounts its feature the first time it is shown.
@@ -22,6 +24,8 @@ const isMac = navigator.userAgent.includes("Mac");
 const mod = isMac ? "⌘" : "Ctrl+";
 
 const tabs = [...document.querySelectorAll<HTMLButtonElement>("[data-tab]")];
+// Tab and Settings heading icons (index.html data-icon), before anything else draws.
+fillIcons();
 const sheet = document.getElementById("settings")!;
 const openBtn = document.getElementById("settings-open") as HTMLButtonElement;
 
@@ -34,6 +38,8 @@ function show(name: string, focusTab = false): void {
     if (active && focusTab) tab.focus();
     document.getElementById(`panel-${tab.dataset.tab}`)!.hidden = !active;
   }
+  // The selected pill slides to this tab (styles.css .segmented-pill).
+  tabs[0].parentElement!.style.setProperty("--tab", String(order.indexOf(name)));
   const panel = document.getElementById(`panel-${name}`)!;
   if (!mounted.has(name)) {
     mounted.add(name);
@@ -84,6 +90,7 @@ const shortcuts: [string, string][] = [
   ["Close", "Esc"],
 ];
 mountCaptureSettings(document.getElementById("settings-capture")!);
+mountVoiceSettings(document.getElementById("settings-voice")!);
 document.getElementById("shortcuts")!.innerHTML = shortcuts
   .map(([what, keys]) => `<div><dt>${what}</dt><dd><kbd>${keys}</kbd></dd></div>`)
   .join("");
