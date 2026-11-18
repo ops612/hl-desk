@@ -65,7 +65,8 @@ windows = { version = "0.62", features = ["Foundation", "Foundation_Collections"
 windows-future = "0.3"
 # Offline voice to text (voice.rs, Windows only): whisper.cpp built from source with cmake
 # (whisper-rs: Unlicense; whisper.cpp: MIT) and the default microphone through cpal (Apache-2.0).
-whisper-rs = "0.16"
+# raw-api: the C callback types used to time the encoder and decoder.
+whisper-rs = { version = "0.16", features = ["raw-api"] }
 cpal = "0.18"
 
 [target.'cfg(windows)'.dev-dependencies]
