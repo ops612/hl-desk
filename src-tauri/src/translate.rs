@@ -913,6 +913,24 @@ fn translate_copy(app: AppHandle, text: String) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Detected {
+    pair: &'static str,
+    script: &'static str,
+}
+
+/// Auto-detect for a text that did not come from a double copy (the screenshot editor's OCR
+/// lines): the same rules and remembered picks as the card. None: no letters to translate.
+#[tauri::command]
+fn translate_detect(app: AppHandle, text: String) -> Option<Detected> {
+    let (script, settled) = detect(&text)?;
+    let pick = settings::translate_pick(&app, script.id());
+    let pair = choose_pair(script, settled, pick.as_deref());
+    applog::info(&format!("translate: detected {} text, pair {}", script.id(), pair.id()));
+    Some(Detected { pair: pair.id(), script: script.id() })
+}
+
 /// The user picked a pair by hand for text in `script` ("han" or "latin"): remember it.
 #[tauri::command]
 fn translate_set_pick(app: AppHandle, script: String, pair: String) -> Result<(), String> {
@@ -1006,6 +1024,7 @@ pub fn commands() -> impl Fn(Invoke) -> bool + Send + Sync + 'static {
         translate_card_show,
         translate_card_hide,
         translate_copy,
+        translate_detect,
         translate_set_pick,
         translate_status,
         translate_download,

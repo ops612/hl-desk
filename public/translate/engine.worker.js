@@ -10,7 +10,8 @@
  * compiled with WebAssembly.instantiate (no streaming, so the server's MIME type does not matter).
  *
  * One worker holds one language pair. Messages: {id, cmd: "init", wasm}, {id, cmd: "load", from,
- * to, files: {kind: {name, buffer}}}, {id, cmd: "translate", text}; replies {id, ok, result|error}.
+ * to, files: {kind: {name, buffer}}}, {id, cmd: "translateMany", texts}; replies
+ * {id, ok, result|error}.
  */
 /* global loadBergamot */
 importScripts("bergamot-translator.js");
@@ -73,23 +74,26 @@ function load(from, to, files) {
   return { ms: Math.round(performance.now() - t0), heapMB: heapMB() };
 }
 
-function translate(text) {
+/** Translates several texts in one engine call (the editor's OCR lines, or one card text). */
+function translateMany(texts) {
   if (!model) throw new Error("no language model loaded");
   const t0 = performance.now();
   const messages = new bergamot.VectorString();
   const options = new bergamot.VectorResponseOptions();
-  messages.push_back(text);
-  options.push_back({ qualityScores: false, alignment: false, html: false });
-  let out;
+  for (const text of texts) {
+    messages.push_back(text);
+    options.push_back({ qualityScores: false, alignment: false, html: false });
+  }
+  const out = [];
   try {
     const res = service.translate(model, messages, options);
-    out = res.get(0).getTranslatedText();
+    for (let i = 0; i < texts.length; i++) out.push(res.get(i).getTranslatedText());
     res.delete();
   } finally {
     messages.delete();
     options.delete();
   }
-  return { text: out, ms: Math.round(performance.now() - t0), heapMB: heapMB() };
+  return { texts: out, ms: Math.round(performance.now() - t0), heapMB: heapMB() };
 }
 
 onmessage = async ({ data }) => {
@@ -97,7 +101,7 @@ onmessage = async ({ data }) => {
     let result;
     if (data.cmd === "init") result = await init(data.wasm);
     else if (data.cmd === "load") result = load(data.from, data.to, data.files);
-    else if (data.cmd === "translate") result = translate(data.text);
+    else if (data.cmd === "translateMany") result = translateMany(data.texts);
     else throw new Error("unknown command " + data.cmd);
     postMessage({ id: data.id, ok: true, result, logs: logs.splice(0) });
   } catch (e) {
