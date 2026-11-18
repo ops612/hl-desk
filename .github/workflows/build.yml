@@ -177,9 +177,13 @@ jobs:
     timeout-minutes: 60
     env:
       # whisper.cpp (voice.rs; whisper-rs-sys passes GGML_* to cmake): not tuned to the runner's
-      # CPU, and AVX only (MSVC /arch:AVX), so it runs on Sandy/Ivy Bridge PCs: no AVX2, FMA,
-      # BMI2 or AVX512. voice.rs cpu_supported() checks the same at run time. Changing these
-      # needs a new rust-cache key below, as whisper-rs-sys does not rebuild on env changes.
+      # CPU, and AVX + F16C only (MSVC /arch:AVX), so it runs on Ivy Bridge PCs: no AVX2, FMA,
+      # BMI2 or AVX512. MSVC has no F16C switch and ggml only assumes F16C with AVX2, so
+      # __F16C__ comes in through CFLAGS/CXXFLAGS (cc, and so cmake-rs, read them); without it
+      # fp16 weights convert one by one (about 13x slower in CI). voice.rs cpu_supported()
+      # checks the same at run time, and a test checks the build. Changing these needs a new
+      # rust-cache key below, as whisper-rs-sys does not rebuild on env changes. "-D", not
+      # "/D": Git Bash would rewrite a value starting with "/" as a path.
       GGML_NATIVE: "OFF"
       GGML_AVX: "ON"
       GGML_AVX2: "OFF"
@@ -187,6 +191,8 @@ jobs:
       GGML_F16C: "ON"
       GGML_BMI2: "OFF"
       GGML_AVX512: "OFF"
+      CFLAGS: "-D__F16C__"
+      CXXFLAGS: "-D__F16C__"
     steps:
       - uses: actions/checkout@v4
 
@@ -201,7 +207,7 @@ jobs:
         with:
           workspaces: src-tauri
           # Bump with the GGML_* flags above.
-          key: ggml-avx1
+          key: ggml-avx-f16c1
 
       - run: npm ci
 

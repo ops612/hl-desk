@@ -15,7 +15,7 @@ use tauri::{
 struct Status {
     /// This build has offline voice to text (Windows).
     supported: bool,
-    /// Why this PC can't run it (its processor lacks AVX2 and co.), or None.
+    /// Why this PC can't run it (its processor lacks AVX or F16C), or None.
     unsupported_reason: Option<&'static str>,
     /// The Settings switch (false where this PC can't run it).
     enabled: bool,
@@ -217,7 +217,7 @@ mod imp {
     /// whisper.cpp skips input shorter than 1 s; shorter recordings are padded with silence.
     const MIN_PCM: usize = 17_600;
 
-    pub const CPU_REASON: &str = "Not available: this PC's processor lacks AVX.";
+    pub const CPU_REASON: &str = "Not available: this PC's processor lacks AVX or F16C.";
     const NO_MIC: &str = "No microphone found. Plug one in, or turn it on in Windows sound settings.";
     const NO_ACCESS: &str =
         "HL Desk can't use the microphone. Turn on Settings > Privacy > Microphone > Let desktop apps access your microphone.";
@@ -233,14 +233,16 @@ mod imp {
         m.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// whisper.cpp is built for AVX only (build.yml GGML_* flags: MSVC /arch:AVX, with SSE up to
-    /// 4.2; no AVX2, FMA, BMI2 or F16C code), so it runs from Sandy Bridge on; on a processor
-    /// without AVX it would crash with an illegal instruction. The check also covers the OS
-    /// saving AVX state (is_x86_feature_detected checks OSXSAVE).
+    /// whisper.cpp is built for AVX and F16C (build.yml GGML_* and CFLAGS: MSVC /arch:AVX with
+    /// __F16C__, SSE up to 4.2; no AVX2, FMA or BMI2 code), so it runs from Ivy Bridge on; on a
+    /// processor without them it would crash with an illegal instruction. The check also
+    /// covers the OS saving AVX state (is_x86_feature_detected checks OSXSAVE).
     pub fn cpu_supported() -> bool {
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
-            is_x86_feature_detected!("avx") && is_x86_feature_detected!("sse4.2")
+            is_x86_feature_detected!("avx")
+                && is_x86_feature_detected!("f16c")
+                && is_x86_feature_detected!("sse4.2")
         }
         #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
         {
@@ -686,13 +688,15 @@ mod tests {
         assert!(imp::cpu_supported());
     }
 
-    /// whisper.cpp must be built for AVX only (build.yml GGML_* flags), or it crashes on
-    /// Ivy Bridge PCs (illegal instruction 0xc000001d); cpu_supported() relies on this.
+    /// whisper.cpp must be built for AVX + F16C only (build.yml GGML_* and CFLAGS), or it
+    /// crashes on Ivy Bridge PCs (illegal instruction 0xc000001d) or runs about 13x slower
+    /// (no F16C); cpu_supported() relies on this.
     #[test]
-    fn whisper_is_built_for_avx_only() {
+    fn whisper_is_built_for_avx_and_f16c_only() {
         let info = whisper_rs::print_system_info();
         eprintln!("voice: system {info}");
         assert!(info.contains("AVX = 1"), "AVX should be on: {info}");
+        assert!(info.contains("F16C = 1"), "F16C should be on: {info}");
         for flag in ["AVX2 = 1", "FMA = 1", "BMI2 = 1", "AVX512 = 1"] {
             assert!(!info.contains(flag), "{flag} in a build that must run without it: {info}");
         }
