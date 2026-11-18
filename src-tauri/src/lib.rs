@@ -4,6 +4,7 @@ mod db;
 mod notes;
 mod screenshot;
 mod settings;
+mod translate;
 
 use std::{
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
@@ -168,6 +169,7 @@ pub fn run() {
     let screenshot_commands = screenshot::commands();
     let notes_commands = notes::commands();
     let settings_commands = settings::commands();
+    let translate_commands = translate::commands();
     let app_commands = applog::commands();
     let shell_commands = shell_handlers();
 
@@ -220,6 +222,8 @@ pub fn run() {
                 notes_commands(invoke)
             } else if command.starts_with("settings_") {
                 settings_commands(invoke)
+            } else if command.starts_with("translate_") {
+                translate_commands(invoke)
             } else if command.starts_with("shell_") {
                 shell_commands(invoke)
             } else {
@@ -284,6 +288,7 @@ pub fn run() {
             clipboard::init(handle);
             screenshot::init(handle);
             notes::init(handle);
+            translate::init(handle);
 
             // First run: open at login is turned on and the window opens with the welcome card.
             // Started at login (--hidden): tray icon only. Started by hand: show the window.

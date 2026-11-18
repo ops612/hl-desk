@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HL Desk Translate</title>
+  </head>
+  <body class="tr-page">
+    <div class="tr-card" id="card">
+      <header class="tr-head">
+        <span class="tr-title">TRANSLATE</span>
+        <span class="tr-head-actions">
+          <button class="icon-btn pin-btn" id="pin" type="button" aria-label="Keep the card open"
+            title="Keep the card open" aria-pressed="false">
+            <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M6 2h4l-.5 4 2.5 2.5V10H8.6v4h-1.2v-4H4V8.5L6.5 6z" fill="none" stroke="currentColor"
+                stroke-width="1.2" stroke-linejoin="round" />
+            </svg>
+          </button>
+          <button class="icon-btn" id="close" type="button" aria-label="Close" title="Close">
+            <svg width="12" height="12" viewBox="0 0 14 14" aria-hidden="true" fill="none" stroke="currentColor"
+              stroke-width="1.5" stroke-linecap="round"><path d="M3 3l8 8M11 3l-8 8" /></svg>
+          </button>
+        </span>
+      </header>
+      <div class="tr-content">
+        <p class="tr-source" id="source"></p>
+        <p class="tr-result" id="result" aria-live="polite"></p>
+        <section class="tr-get" id="get" hidden>
+          <h2 class="tr-get-title" id="get-title"></h2>
+          <p class="tr-get-text" id="get-text"></p>
+          <div class="tr-progress" id="progress" hidden><div class="tr-progress-bar" id="progress-bar"></div></div>
+          <p class="tr-get-status hint" id="get-status" hidden></p>
+        </section>
+        <p class="tr-error" id="error" role="alert" hidden></p>
+      </div>
+      <div class="tr-actions">
+        <div class="tr-picker">
+          <button class="btn tr-lang" id="lang" type="button" aria-haspopup="menu" aria-expanded="false"
+            aria-controls="menu"><span id="lang-label"></span>
+            <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 3.5l3 3 3-3" fill="none"
+              stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" /></svg>
+          </button>
+          <div class="tr-menu" id="menu" role="menu" hidden></div>
+        </div>
+        <button class="btn-primary" id="primary" type="button">Copy</button>
+      </div>
+      <footer class="footer tr-footer">Offline · Esc to close · Enter copies</footer>
+    </div>
+    <script type="module" src="/src/translate/main.ts"></script>
+  </body>
+</html>

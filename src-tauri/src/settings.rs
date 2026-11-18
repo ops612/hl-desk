@@ -1,10 +1,11 @@
 //! App settings shared by the shell (not by one feature): <app data>/settings.json holds
-//! "welcome seen" and the screenshot capture settings (capture key, mark up after a device
-//! screenshot; changed through screenshot.rs commands). Open at login is kept by the OS itself (tauri-plugin-autostart: a LaunchAgent
+//! "welcome seen", the screenshot capture settings (capture key, mark up after a device
+//! screenshot; changed through screenshot.rs commands) and the translate card's last language
+//! picks (translate.rs). Open at login is kept by the OS itself (tauri-plugin-autostart: a LaunchAgent
 //! on macOS, the HKCU Run key on Windows), so it is always read from there, never stored here.
 //! Commands are named "settings_<name>" and routed here by lib.rs.
 
-use std::{path::PathBuf, sync::Mutex};
+use std::{collections::BTreeMap, path::PathBuf, sync::Mutex};
 
 use serde::{Deserialize, Serialize};
 use tauri::{ipc::Invoke, AppHandle, Manager};
@@ -23,6 +24,9 @@ struct Stored {
     /// Offer "Mark up in HL Desk" after a device screenshot (screenshot/watch.rs). On by default
     /// on Windows; off on macOS, where watching the screenshot folder needs Desktop access.
     markup_after_shot: bool,
+    /// Translate card: the language pair last picked by hand, per source script ("han",
+    /// "latin"), e.g. {"han": "zh-Hans-en"}. Used by translate.rs.
+    translate_picks: BTreeMap<String, String>,
 }
 
 impl Default for Stored {
@@ -31,6 +35,7 @@ impl Default for Stored {
             welcome_seen: false,
             capture_key: "default".into(),
             markup_after_shot: !cfg!(target_os = "macos"),
+            translate_picks: BTreeMap::new(),
         }
     }
 }
@@ -79,6 +84,12 @@ fn load(app: &AppHandle) -> Stored {
         }
         if let Some(v) = obj.get("markupAfterShot").and_then(|v| v.as_bool()) {
             stored.markup_after_shot = v;
+        }
+        if let Some(v) = obj.get("translatePicks").and_then(|v| v.as_object()) {
+            stored.translate_picks = v
+                .iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect();
         }
         applog::warn("settings: kept the values that could be read");
         return stored;
@@ -140,6 +151,17 @@ pub fn markup_after_shot(app: &AppHandle) -> bool {
 
 pub fn set_markup_after_shot(app: &AppHandle, on: bool) -> Result<(), String> {
     update(app, |s| s.markup_after_shot = on)
+}
+
+/// The translate card's last manual pick for text in `script`; read by translate.rs.
+pub fn translate_pick(app: &AppHandle, script: &str) -> Option<String> {
+    load(app).translate_picks.get(script).cloned()
+}
+
+pub fn set_translate_pick(app: &AppHandle, script: &str, pair: &str) -> Result<(), String> {
+    update(app, |s| {
+        s.translate_picks.insert(script.to_string(), pair.to_string());
+    })
 }
 
 #[derive(Serialize)]

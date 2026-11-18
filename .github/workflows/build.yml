@@ -39,6 +39,11 @@ jobs:
       - name: Compile (universal, no bundle)
         run: npm run tauri -- build --target universal-apple-darwin --no-bundle
 
+      # Rust unit tests (translate.rs: double-copy detector, language detection, model manifest
+      # and sha256 check, card placement). Needs dist/ from the compile step above.
+      - name: Rust unit tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+
       - name: Upload Cargo.lock
         uses: actions/upload-artifact@v4
         with:
