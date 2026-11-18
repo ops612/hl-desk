@@ -1055,9 +1055,12 @@ mod slot_tests {
         let argv = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let cwd = Path::new("C:/bench");
         assert_eq!(bench_args(&argv(&["hl-desk.exe", "--hidden"]), cwd), None);
+        // An absolute clip path (on this OS) is kept as it is.
+        let abs: PathBuf = std::env::temp_dir().join("a.wav");
+        let abs_arg = abs.to_string_lossy().into_owned();
         assert_eq!(
-            bench_args(&argv(&["hl-desk.exe", "--voice-bench", "m.bin", "C:/clips/a.wav", "2"]), cwd),
-            Some(Ok(BenchArgs { model: cwd.join("m.bin"), clip: PathBuf::from("C:/clips/a.wav"), threads: Some(2) }))
+            bench_args(&argv(&["hl-desk.exe", "--voice-bench", "m.bin", &abs_arg, "2"]), cwd),
+            Some(Ok(BenchArgs { model: cwd.join("m.bin"), clip: abs.clone(), threads: Some(2) }))
         );
         assert_eq!(
             bench_args(&argv(&["hl-desk.exe", "--voice-bench", "m.bin", "a.wav"]), cwd),
