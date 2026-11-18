@@ -197,7 +197,7 @@ mod imp {
         traits::{DeviceTrait, HostTrait, StreamTrait},
         FromSample, Sample, SizedSample,
     };
-    use tauri::{ipc::Channel, AppHandle, Manager};
+    use tauri::{ipc::Channel, AppHandle, Emitter, Manager};
 
     use super::{Progress, Slot, Status};
     use crate::{applog, translate::ModelFile};
@@ -214,6 +214,10 @@ mod imp {
 
     /// Recording stops by itself after this long.
     const MAX_RECORDING: Duration = Duration::from_secs(120);
+    /// While recording, the microphone level goes to the note editor's bars this often.
+    const LEVEL_EVERY: Duration = Duration::from_millis(100);
+    /// Event with the peak (0..1) of the samples recorded since the last one (src/features/notes).
+    const LEVEL_EVENT: &str = "voice://level";
     /// whisper.cpp skips input shorter than 1 s; shorter recordings are padded with silence.
     const MIN_PCM: usize = 17_600;
 
@@ -425,6 +429,7 @@ mod imp {
         let (stop_tx, stop_rx) = mpsc::channel::<()>();
         let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
         let (done_tx, done_rx) = mpsc::channel::<Captured>();
+        let app = app.clone();
         std::thread::spawn(move || {
             let (stream, buf, rate) = match open_mic() {
                 Ok(opened) => opened,
@@ -435,8 +440,27 @@ mod imp {
             };
             let _ = ready_tx.send(Ok(()));
             // Stop sent, or the Recording dropped (start timed out or was called off): stop now.
-            if let Err(mpsc::RecvTimeoutError::Timeout) = stop_rx.recv_timeout(MAX_RECORDING) {
-                applog::info("voice: recording reached 120 s and stopped");
+            // Meanwhile, every LEVEL_EVERY, send the level of what came in since the last tick.
+            let deadline = Instant::now() + MAX_RECORDING;
+            let mut seen = 0usize;
+            loop {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    applog::info("voice: recording reached 120 s and stopped");
+                    break;
+                }
+                match stop_rx.recv_timeout(LEVEL_EVERY.min(left)) {
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        let level = {
+                            let buf = lock(&buf);
+                            let peak = buf[seen.min(buf.len())..].iter().fold(0f32, |m, s| m.max(s.abs()));
+                            seen = buf.len();
+                            peak.min(1.0)
+                        };
+                        let _ = app.emit(LEVEL_EVENT, level);
+                    }
+                    _ => break,
+                }
             }
             drop(stream);
             let samples = std::mem::take(&mut *lock(&buf));
