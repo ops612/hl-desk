@@ -38,6 +38,8 @@ xcap = "0.9"
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 sha2 = "0.10"
+# A second request for a pair that is already downloading waits for the same result (translate.rs).
+tokio = { version = "1", default-features = false, features = ["sync"] }
 
 # macOS pasteboard access for the clipboard feature: changeCount polling and skipping
 # org.nspasteboard.ConcealedType (password managers). NSEvent, NSScreen, NSWindow: the translate

@@ -6,9 +6,10 @@
 //! - Windows: the clipboard watcher in clipboard.rs polls every 500 ms, so two quick copies usually
 //!   look like one change there. This module runs its own clipboard listener instead
 //!   (AddClipboardFormatListener on a message-only window): one WM_CLIPBOARDUPDATE per copy.
-//! - macOS (and others): clipboard.rs calls `on_text_copied` with each new text and how far the
-//!   pasteboard changeCount moved since its last look (a jump of 2 or more counts as a double
-//!   copy), and `on_other_copied` for an image or files.
+//! - macOS (and others): clipboard.rs polls the pasteboard changeCount every 100 ms and calls
+//!   `on_text_copied` with each new text (two looks with the same text within DOUBLE_COPY_MS are a
+//!   double copy; changes within one 100 ms look are one copy, as some apps write twice per
+//!   Cmd+C), and `on_other_copied` for an image or files.
 //!
 //! The card is one reusable window (label "translate"), created hidden on first use, shown near
 //! the mouse pointer on the screen under it and always on top once its page has drawn
@@ -53,7 +54,7 @@ use crate::{applog, settings};
 // ---------- double-copy detector ----------
 
 /// Two copies of the same text at most this far apart open the card. On macOS the watcher looks
-/// every 500 ms, so two quick copies seen on two looks arrive about 500 ms apart.
+/// every 100 ms, so a copy is seen up to about 100 ms late.
 pub const DOUBLE_COPY_MS: u64 = 650;
 /// Two clipboard updates closer than this are one copy (some apps write the clipboard twice).
 pub const MIN_GAP_MS: u64 = 40;
@@ -69,13 +70,9 @@ pub struct Seen {
     pub at_ms: u64,
 }
 
-/// True when `now` completes a double copy: the clipboard counter moved 2 or more since the last
-/// look (two copies seen at once), or the previous copy had the same text, at least MIN_GAP_MS
-/// and at most DOUBLE_COPY_MS before.
-pub fn is_double_copy(prev: Option<Seen>, now: Seen, jump: i64) -> bool {
-    if jump >= 2 {
-        return true;
-    }
+/// True when `now` completes a double copy: the previous copy had the same text, at least
+/// MIN_GAP_MS and at most DOUBLE_COPY_MS before.
+pub fn is_double_copy(prev: Option<Seen>, now: Seen) -> bool {
     match prev {
         Some(p) if p.hash == now.hash && now.at_ms >= p.at_ms => {
             let gap = now.at_ms - p.at_ms;
@@ -107,15 +104,14 @@ fn hash(text: &str) -> u64 {
     h.finish()
 }
 
-/// Entry point for the clipboard watcher (clipboard.rs, macOS): each new text copy, with how far
-/// the clipboard change counter moved since the watcher last looked (1 for a single copy).
+/// Entry point for the clipboard watcher (clipboard.rs, macOS): each new text copy.
 /// Windows ignores it: this module's own listener sees every copy there.
 #[cfg_attr(windows, allow(dead_code))] // called from the macOS watcher only
-pub fn on_text_copied(app: &AppHandle, text: &str, jump: i64) {
+pub fn on_text_copied(app: &AppHandle, text: &str) {
     if cfg!(windows) {
         return;
     }
-    handle_copy(app, text, jump);
+    handle_copy(app, text);
 }
 
 /// Entry point for the clipboard watcher (clipboard.rs, macOS): an image or files were copied.
@@ -144,7 +140,7 @@ fn single_copy(app: &AppHandle) {
     }
 }
 
-fn handle_copy(app: &AppHandle, text: &str, jump: i64) {
+fn handle_copy(app: &AppHandle, text: &str) {
     if text.trim().is_empty() {
         other_copy(app);
         return;
@@ -162,13 +158,13 @@ fn handle_copy(app: &AppHandle, text: &str, jump: i64) {
     }
     let double = {
         let mut last = lock(&LAST);
-        let double = is_double_copy(*last, seen, jump);
+        let double = is_double_copy(*last, seen);
         *last = if double { None } else { Some(seen) };
         double
     };
     if double {
         applog::info(&format!(
-            "translate: double copy ({} chars, counter jump {jump})",
+            "translate: double copy ({} chars)",
             text.chars().count()
         ));
         open_card(app, text);
@@ -478,16 +474,24 @@ struct Progress {
     total: u64,
 }
 
-static DOWNLOADING: AtomicBool = AtomicBool::new(false);
+/// A running download of one pair. A second request for the same pair (the card and an editor
+/// window) joins it: its channel gets the progress too and it ends with the same result.
+struct Download {
+    listeners: Mutex<Vec<Channel<Progress>>>,
+    last: Mutex<Progress>,
+    result: tokio::sync::watch::Sender<Option<Result<(), String>>>,
+}
 
-/// Clears DOWNLOADING when the download ends, however it ends.
-struct DownloadGuard;
-
-impl Drop for DownloadGuard {
-    fn drop(&mut self) {
-        DOWNLOADING.store(false, Ordering::SeqCst);
+impl Download {
+    fn report(&self, progress: Progress) {
+        *lock(&self.last) = progress.clone();
+        for channel in lock(&self.listeners).iter() {
+            let _ = channel.send(progress.clone());
+        }
     }
 }
+
+static DOWNLOADS: Mutex<Vec<(Pair, std::sync::Arc<Download>)>> = Mutex::new(Vec::new());
 
 fn http_client() -> Result<reqwest::Client, String> {
     // reqwest is built without a TLS crypto provider (as in tauri-plugin-updater): use ring.
@@ -578,7 +582,7 @@ async fn download_file(
     Ok(())
 }
 
-async fn download_pair(app: &AppHandle, pair: Pair, progress: &Channel<Progress>) -> Result<(), String> {
+async fn download_pair(app: &AppHandle, pair: Pair, progress: &(dyn Fn(Progress) + Sync)) -> Result<(), String> {
     let models = models_for(pair);
     let dir = pair_dir(app, pair)?;
     fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
@@ -588,17 +592,17 @@ async fn download_pair(app: &AppHandle, pair: Pair, progress: &Channel<Progress>
     for file in models.files {
         if fs::metadata(dir.join(file.name)).is_ok_and(|m| m.len() == file.size) {
             done += file.size;
-            let _ = progress.send(Progress { done, total });
+            progress(Progress { done, total });
             continue;
         }
         let before = done;
         let report = |bytes: u64| {
-            let _ = progress.send(Progress { done: before + bytes, total });
+            progress(Progress { done: before + bytes, total });
         };
         download_file(&client, &dir, pair, file, &report).await?;
         done += file.size;
     }
-    let _ = progress.send(Progress { done: total, total });
+    progress(Progress { done: total, total });
     Ok(())
 }
 
@@ -633,6 +637,10 @@ static PENDING: Mutex<Option<CardRequest>> = Mutex::new(None);
 static ANCHOR: Mutex<Option<(f64, f64)>> = Mutex::new(None);
 /// The card page has drawn at least once (set by translate_card_show).
 static PAGE_READY: AtomicBool = AtomicBool::new(false);
+/// Where the card of this card session went (top-left corner and the area it must stay in; points
+/// on macOS, physical pixels elsewhere). Set by the first show after a double copy, cleared by the
+/// next double copy and by hiding, so later shows of the same session only resize.
+static SESSION: Mutex<Option<((i32, i32), (i32, i32, i32, i32))>> = Mutex::new(None);
 
 fn open_card(app: &AppHandle, text: &str) {
     let Some((script, settled)) = detect(text) else {
@@ -648,6 +656,7 @@ fn open_card(app: &AppHandle, text: &str) {
         pair.id(),
         if settled.is_some() { "detected" } else if pick.is_some() { "last pick" } else { "default" }
     ));
+    *lock(&SESSION) = None;
     *lock(&PENDING) = Some(CardRequest {
         text: text.to_string(),
         pair: pair.id(),
@@ -722,6 +731,25 @@ pub fn card_position(pointer: (i32, i32), size: (i32, i32), area: (i32, i32, i32
     (x, y)
 }
 
+/// A card that keeps its place (same card session) but changed size: pulled back inside `area` if
+/// it no longer fits.
+pub fn keep_inside(pos: (i32, i32), size: (i32, i32), area: (i32, i32, i32, i32)) -> (i32, i32) {
+    let (ax, ay, aw, ah) = area;
+    (pos.0.min(ax + aw - size.0).max(ax), pos.1.min(ay + ah - size.1).max(ay))
+}
+
+/// The card's corner for this show: the session's place (resized, kept inside its area), or for the
+/// first show of a session `first()` (corner, area), which is remembered.
+fn session_position(size: (i32, i32), first: impl FnOnce() -> ((i32, i32), (i32, i32, i32, i32))) -> (i32, i32) {
+    let mut session = lock(&SESSION);
+    if let Some((pos, area)) = *session {
+        return keep_inside(pos, size, area);
+    }
+    let (pos, area) = first();
+    *session = Some((pos, area));
+    pos
+}
+
 /// Where the card goes, in physical pixels: (x, y, width, height). On the monitor under the
 /// pointer (the main one if unknown), near the pointer (top-right corner if unknown).
 #[cfg(not(target_os = "macos"))]
@@ -742,8 +770,10 @@ fn placement(app: &AppHandle, height: f64) -> (i32, i32, i32, i32) {
         let a = m.work_area();
         (a.position.x, a.position.y, a.size.width as i32, a.size.height as i32)
     });
-    let pointer = anchor.map_or((area.0 + area.2, area.1), |(x, y)| (x.round() as i32, y.round() as i32));
-    let (x, y) = card_position(pointer, (w, h), area, px(POINTER_GAP));
+    let (x, y) = session_position((w, h), || {
+        let pointer = anchor.map_or((area.0 + area.2, area.1), |(x, y)| (x.round() as i32, y.round() as i32));
+        (card_position(pointer, (w, h), area, px(POINTER_GAP)), area)
+    });
     (x, y, w, h)
 }
 
@@ -788,17 +818,50 @@ fn nudge(window: &WebviewWindow, w: i32, h: i32) {
 
 /// macOS: everything in points (Cocoa's global coordinates), so mixed Retina and non-Retina
 /// screens need no scale maths: the screen under the pointer (NSEvent.mouseLocation), its visible
-/// frame (without menu bar and Dock), then the card near the pointer inside it. Shown with
-/// orderFrontRegardless, which brings the window up without activating HL Desk: the keyboard stays
-/// in the app the text came from (a click on the card gives it the keyboard for Esc and Enter).
-/// Returns the top-left corner in points.
+/// frame (without menu bar and Dock), then the card near the pointer inside it (first show of a
+/// card session; later shows only resize). Shown with orderFrontRegardless, which brings the
+/// window up without activating HL Desk: the keyboard stays in the app the text came from (a click
+/// on the card gives it the keyboard for Esc and Enter). Returns the top-left corner in points.
 #[cfg(target_os = "macos")]
 fn show_card_mac(window: &WebviewWindow, height: f64) -> Result<(i32, i32), String> {
     use objc2::MainThreadMarker;
-    use objc2_app_kit::{NSEvent, NSScreen, NSWindow};
+    use objc2_app_kit::{NSApplication, NSWindow};
     use tauri::{LogicalPosition, LogicalSize};
 
     let mtm = MainThreadMarker::new().ok_or("not on the main thread")?;
+    let size = (CARD_W.round() as i32, height.round() as i32);
+    let mut failed = None;
+    let (x, y) = session_position(size, || match pointer_place_mac(mtm, size) {
+        Ok(place) => place,
+        Err(e) => {
+            failed = Some(e);
+            ((40, 40), (0, 0, 1280, 800))
+        }
+    });
+    if let Some(e) = failed {
+        applog::warn(&format!("translate: no pointer screen ({e}); card goes to the corner"));
+    }
+    window.set_size(LogicalSize::new(CARD_W, height)).map_err(|e| e.to_string())?;
+    window.set_position(LogicalPosition::new(x as f64, y as f64)).map_err(|e| e.to_string())?;
+    let ptr = window.ns_window().map_err(|e| e.to_string())?;
+    // A hidden app shows no window: unhide it (without taking the focus) first, as a safety net.
+    NSApplication::sharedApplication(mtm).unhideWithoutActivation();
+    // SAFETY: Tauri's NSWindow pointer for this window, used on the main thread.
+    unsafe {
+        let ns_window: &NSWindow = &*(ptr as *const NSWindow);
+        ns_window.orderFrontRegardless();
+    }
+    Ok((x, y))
+}
+
+/// macOS: the card's corner near the pointer and the visible frame of the screen under it, both
+/// in points with a top-left origin.
+#[cfg(target_os = "macos")]
+fn pointer_place_mac(
+    mtm: objc2::MainThreadMarker,
+    size: (i32, i32),
+) -> Result<((i32, i32), (i32, i32, i32, i32)), String> {
+    use objc2_app_kit::{NSEvent, NSScreen};
     // SAFETY: a class method reading the current pointer location.
     let mouse = unsafe { NSEvent::mouseLocation() };
     let screens = NSScreen::screens(mtm).to_vec();
@@ -824,17 +887,7 @@ fn show_card_mac(window: &WebviewWindow, height: f64) -> Result<(i32, i32), Stri
         vf.size.height.round() as i32,
     );
     let pointer = (mouse.x.round() as i32, (primary_h - mouse.y).round() as i32);
-    let size = (CARD_W.round() as i32, height.round() as i32);
-    let (x, y) = card_position(pointer, size, area, POINTER_GAP as i32);
-    window.set_size(LogicalSize::new(CARD_W, height)).map_err(|e| e.to_string())?;
-    window.set_position(LogicalPosition::new(x as f64, y as f64)).map_err(|e| e.to_string())?;
-    let ptr = window.ns_window().map_err(|e| e.to_string())?;
-    // SAFETY: Tauri's NSWindow pointer for this window, used on the main thread.
-    unsafe {
-        let ns_window: &NSWindow = &*(ptr as *const NSWindow);
-        ns_window.orderFrontRegardless();
-    }
-    Ok((x, y))
+    Ok((card_position(pointer, size, area, POINTER_GAP as i32), area))
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
@@ -878,22 +931,12 @@ fn translate_card_show(window: WebviewWindow, height: f64) {
     }
 }
 
-/// Esc, close, Copy or a click elsewhere. macOS: when no other HL Desk window is showing, hide
-/// the app too, so the keyboard goes back to the app the text came from.
+/// Esc, close, Copy, a click elsewhere or the next single copy: hides only the card window (never
+/// the app, which would also keep the next card from showing on macOS) and ends the card session.
 #[tauri::command]
 fn translate_card_hide(window: WebviewWindow) {
+    *lock(&SESSION) = None;
     let _ = window.hide();
-    #[cfg(target_os = "macos")]
-    {
-        let app = window.app_handle();
-        let others = app
-            .webview_windows()
-            .into_iter()
-            .any(|(label, w)| label != CARD_LABEL && w.is_visible().unwrap_or(false));
-        if !others {
-            let _ = app.hide();
-        }
-    }
     applog::info("translate: card hidden");
 }
 
@@ -967,21 +1010,54 @@ fn translate_status(app: AppHandle, pair: String) -> Result<PairStatus, String> 
     })
 }
 
-/// Downloads the pair's model files, reporting progress on `on_progress`.
+/// Downloads the pair's model files, reporting progress on `on_progress`. If that pair is already
+/// downloading, joins it instead (progress on this channel too, same result).
 #[tauri::command]
 async fn translate_download(app: AppHandle, pair: String, on_progress: Channel<Progress>) -> Result<(), String> {
     let pair = Pair::from_id(&pair).ok_or("unknown language pair")?;
-    if DOWNLOADING.swap(true, Ordering::SeqCst) {
-        return Err("A download is already running.".into());
+    let (download, joined) = {
+        let mut downloads = lock(&DOWNLOADS);
+        match downloads.iter().find(|(p, _)| *p == pair) {
+            Some((_, d)) => {
+                let _ = on_progress.send(lock(&d.last).clone());
+                lock(&d.listeners).push(on_progress);
+                (d.clone(), true)
+            }
+            None => {
+                let total = models_for(pair).total_size();
+                let d = std::sync::Arc::new(Download {
+                    listeners: Mutex::new(vec![on_progress]),
+                    last: Mutex::new(Progress { done: 0, total }),
+                    result: tokio::sync::watch::channel(None).0,
+                });
+                downloads.push((pair, d.clone()));
+                (d, false)
+            }
+        }
+    };
+    if joined {
+        applog::info(&format!("translate: joined the running {} download", pair.id()));
+        let mut rx = download.result.subscribe();
+        let result = match rx.wait_for(|r| r.is_some()).await {
+            Ok(r) => r.clone().unwrap_or(Ok(())),
+            Err(_) => Err("Download failed: it stopped unexpectedly".to_string()),
+        };
+        return result;
     }
-    let _guard = DownloadGuard;
+    let result = run_download(&app, pair, &download).await;
+    lock(&DOWNLOADS).retain(|(p, _)| *p != pair);
+    download.result.send_replace(Some(result.clone()));
+    result
+}
+
+async fn run_download(app: &AppHandle, pair: Pair, download: &Download) -> Result<(), String> {
     applog::info(&format!(
         "translate: downloading {} models v{} ({} bytes) from {MODEL_BASE_URL}",
         pair.id(),
         models_for(pair).version,
         models_for(pair).total_size()
     ));
-    match download_pair(&app, pair, &on_progress).await {
+    match download_pair(app, pair, &|p| download.report(p)).await {
         Ok(()) => {
             applog::info(&format!("translate: {} models downloaded", pair.id()));
             Ok(())
@@ -1086,7 +1162,7 @@ mod listener {
         // clipboard.rs may be reading at the same moment: try a few times.
         for _ in 0..4 {
             if let Ok(text) = app.clipboard().read_text() {
-                super::handle_copy(app, &text, 1);
+                super::handle_copy(app, &text);
                 return;
             }
             std::thread::sleep(Duration::from_millis(25));
@@ -1167,28 +1243,31 @@ mod tests {
 
     #[test]
     fn double_copy_same_text_in_window() {
-        assert!(is_double_copy(Some(seen("hello", 1_000)), seen("hello", 1_250), 1));
-        assert!(is_double_copy(Some(seen("hello", 1_000)), seen("hello", 1_000 + DOUBLE_COPY_MS), 1));
-        // macOS: two quick copies seen on two looks of the 500 ms watcher.
-        assert!(is_double_copy(Some(seen("hello", 1_000)), seen("hello", 1_500), 1));
+        assert!(is_double_copy(Some(seen("hello", 1_000)), seen("hello", 1_250)));
+        assert!(is_double_copy(Some(seen("hello", 1_000)), seen("hello", 1_000 + DOUBLE_COPY_MS)));
+        // macOS: two quick copies seen on two consecutive 100 ms looks.
+        assert!(is_double_copy(Some(seen("hello", 1_000)), seen("hello", 1_100)));
     }
 
     #[test]
     fn not_double_copy() {
-        assert!(!is_double_copy(None, seen("hello", 1_000), 1));
-        assert!(!is_double_copy(Some(seen("hello", 1_000)), seen("other", 1_200), 1));
-        assert!(!is_double_copy(Some(seen("hello", 1_000)), seen("hello", 1_000 + DOUBLE_COPY_MS + 1), 1));
+        assert!(!is_double_copy(None, seen("hello", 1_000)));
+        assert!(!is_double_copy(Some(seen("hello", 1_000)), seen("other", 1_200)));
+        assert!(!is_double_copy(Some(seen("hello", 1_000)), seen("hello", 1_000 + DOUBLE_COPY_MS + 1)));
         // One copy written twice by the app within a few ms.
-        assert!(!is_double_copy(Some(seen("hello", 1_000)), seen("hello", 1_005), 1));
+        assert!(!is_double_copy(Some(seen("hello", 1_000)), seen("hello", 1_005)));
         // Clock went backwards.
-        assert!(!is_double_copy(Some(seen("hello", 2_000)), seen("hello", 1_900), 1));
+        assert!(!is_double_copy(Some(seen("hello", 2_000)), seen("hello", 1_900)));
     }
 
     #[test]
-    fn double_copy_counter_jump() {
-        assert!(is_double_copy(None, seen("hello", 1_000), 2));
-        assert!(is_double_copy(None, seen("hello", 1_000), 3));
-        assert!(!is_double_copy(None, seen("hello", 1_000), 0));
+    fn card_keeps_its_place_when_resized() {
+        let area = (0, 0, 1920, 1040);
+        assert_eq!(keep_inside((112, 112), (360, 300), area), (112, 112));
+        // Grew past the bottom: pulled up just enough.
+        assert_eq!(keep_inside((112, 900), (360, 300), area), (112, 740));
+        // Second screen to the left.
+        assert_eq!(keep_inside((-500, 100), (360, 200), (-1920, 0, 1920, 1080)), (-500, 100));
     }
 
     #[test]

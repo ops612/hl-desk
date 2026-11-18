@@ -1,6 +1,7 @@
 //! Clipboard feature (Rust side). Only this file and src/features/clipboard/ belong to it.
 //!
-//! A background thread watches the system clipboard about twice a second and stores each new
+//! A background thread watches the system clipboard (macOS: the change counter ten times a
+//! second, the content only when it changed; elsewhere about twice a second) and stores each new
 //! copy in clipboard.db, as one of three kinds:
 //! - "text": the text itself (up to 100 KB).
 //! - "image": a PNG of the image plus a 256 px thumbnail in `<app data>/clipboard-images/`
@@ -670,7 +671,7 @@ fn own_change_check(state: &Clipboard, counter: impl FnOnce() -> i64) -> (i64, b
     (count, false)
 }
 
-/// Runs every ~500 ms on the watcher thread; every minute it also deletes expired items.
+/// Runs on every look of the watcher thread (100 to 500 ms); every minute it deletes expired items.
 fn cleanup_if_due(app: &AppHandle, last: &mut Instant) {
     if last.elapsed() < Duration::from_secs(60) {
         return;
@@ -733,7 +734,9 @@ fn watch(app: AppHandle) {
     let mut last_count = NSPasteboard::generalPasteboard().changeCount() as i64;
     let mut last_cleanup = Instant::now();
     loop {
-        thread::sleep(Duration::from_millis(500));
+        // Every 100 ms only the change counter is read (an integer, very cheap); the content only
+        // when it moved. Fast enough that Cmd+C twice shows up as two looks (translate.rs).
+        thread::sleep(Duration::from_millis(100));
         cleanup_if_due(&app, &mut last_cleanup);
 
         let state = app.state::<Clipboard>();
@@ -743,8 +746,6 @@ fn watch(app: AppHandle) {
                 return None;
             }
             let (count, own) = own_change_check(&state, || pasteboard.changeCount() as i64);
-            // How many copies happened since the last look (2 or more: a quick Cmd+C twice).
-            let jump = count - last_count;
             last_count = count;
             if own {
                 applog::info("clipboard: skipped our own copy");
@@ -766,12 +767,12 @@ fn watch(app: AppHandle) {
                 applog::info("clipboard: skipped a private copy");
                 return None;
             }
-            Some((copied, jump))
+            Some(copied)
         });
-        if let Some((copied, jump)) = copied {
+        if let Some(copied) = copied {
             // Translate card (translate.rs): Cmd+C twice opens it, any other copy hides it.
             match &copied {
-                Copied::Text(text) => crate::translate::on_text_copied(&app, text, jump),
+                Copied::Text(text) => crate::translate::on_text_copied(&app, text),
                 _ => crate::translate::on_other_copied(&app),
             }
             on_copy(&app, copied);

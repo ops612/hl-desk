@@ -187,21 +187,25 @@ export function setupTranslatePanel(captureId: number, onLayout: () => void): vo
   async function download(): Promise<void> {
     const status = pendingStatus;
     if (!status) return;
+    // A language pick while this downloads starts a new run: then this result is stale.
+    const mine = token;
     errorEl.hidden = true;
     downloadBtn.hidden = true;
     progress.hidden = false;
     getStatus.hidden = false;
     const texts = downloadTexts(status);
     const show = (n: number) => {
+      if (mine !== token) return;
       progressBar.style.width = `${Math.min(100, (n / status.totalBytes) * 100)}%`;
       getStatus.textContent = texts.progress(n);
     };
     show(0);
     try {
       await downloadPair(status, show);
-      if (pair === status.pair) await translate();
+      if (mine === token && pair === status.pair) await translate();
     } catch (e) {
       log("error", `editor: download of ${status.pair} failed: ${describe(e)}`);
+      if (mine !== token) return;
       progress.hidden = true;
       getStatus.hidden = true;
       downloadBtn.hidden = false;

@@ -54,13 +54,20 @@ export function touchIdle(): void {
   idleTimer = window.setTimeout(() => stopEngine("2 minutes idle"), IDLE_MS);
 }
 
-function call<T>(msg: Record<string, unknown>, transfer: Transferable[] = []): Promise<T> {
+/** Sends a message to worker `w`, only while it is still the current one (a start-up for a pair
+ * that was replaced meanwhile must not reach the new worker). */
+function call<T>(w: Worker, msg: Record<string, unknown>, transfer: Transferable[] = []): Promise<T> {
   return new Promise((res, rej) => {
-    if (!worker) return rej(new Error("The translation engine is not running."));
+    if (!worker || worker !== w) return rej(new Error("The translation engine was restarted."));
     const id = ++callSeq;
     calls.set(id, { res, rej });
-    worker.postMessage({ ...msg, id }, transfer);
+    w.postMessage({ ...msg, id }, transfer);
   });
+}
+
+/** Throws when worker `w` was replaced or stopped (abandons a stale start-up). */
+function checkCurrent(w: Worker): void {
+  if (worker !== w) throw new Error("The translation engine was restarted.");
 }
 
 /** A model file from Rust as an ArrayBuffer (a plain number array on Tauri's fallback IPC path). */
@@ -96,25 +103,27 @@ function ensureEngine(status: PairStatus): Promise<void> {
     const res = await fetch("/translate/bergamot-translator.wasm");
     if (!res.ok) throw new Error(`could not read the engine (${res.status})`);
     const wasm = await res.arrayBuffer();
+    checkCurrent(w);
     // The engine uses WebAssembly SIMD (Safari / WebKit 16.4 or newer); say so instead of a
     // compile error on an older Mac.
     if (!WebAssembly.validate(wasm)) {
       throw new Error("This computer's web engine is too old for translation (on a Mac: Safari 16.4 or newer).");
     }
-    const init = await call<{ ms: number; heapMB: number }>({ cmd: "init", wasm }, [wasm]);
+    const init = await call<{ ms: number; heapMB: number }>(w, { cmd: "init", wasm }, [wasm]);
     log("info", `engine started in ${init.ms} ms (${init.heapMB} MB)`);
     const files: Record<string, { name: string; buffer: ArrayBuffer }> = {};
     for (const f of status.files) {
       const buffer = toBuffer(await invoke("translate_model_file", { pair: status.pair, kind: f.kind }));
+      checkCurrent(w);
       files[f.kind] = { name: f.name, buffer };
     }
     const buffers = Object.values(files).map((f) => f.buffer);
-    const load = await call<{ ms: number; heapMB: number }>({ cmd: "load", from: info.from, to: info.to, files }, buffers);
+    const load = await call<{ ms: number; heapMB: number }>(w, { cmd: "load", from: info.from, to: info.to, files }, buffers);
     log("info", `${status.pair} loaded in ${Math.round(performance.now() - t0)} ms (build ${load.ms} ms, ${load.heapMB} MB)`);
   })();
   workerReady.catch((e) => {
     log("error", `engine start failed: ${describe(e)}`);
-    if (workerPair === status.pair) stopEngine("start failed");
+    if (worker === w) stopEngine("start failed");
   });
   return workerReady;
 }
@@ -141,7 +150,8 @@ export async function translateTexts(status: PairStatus, texts: string[]): Promi
   clearTimeout(idleTimer);
   try {
     await ensureEngine(status);
-    const out = await call<{ texts: string[]; ms: number; heapMB: number }>({ cmd: "translateMany", texts });
+    if (!worker || workerPair !== status.pair) throw new Error("The translation engine was restarted.");
+    const out = await call<{ texts: string[]; ms: number; heapMB: number }>(worker, { cmd: "translateMany", texts });
     log("info", `translated ${texts.length} text(s), ${texts.join("").length} chars, with ${status.pair} in ${out.ms} ms (${out.heapMB} MB)`);
     const zh = pairInfo(status.pair).to.startsWith("zh");
     return out.texts.map((t) => (zh ? fixZhPunctuation(t) : t));

@@ -26,7 +26,7 @@ Approach: build once, use forever. Few dependencies, no server, no account, noth
 ## Mac-specific points
 
 - Screenshots need the Screen Recording permission: macOS asks once, the director clicks Allow.
-- Clipboard: macOS has no "copied" event, so the app checks the clipboard's change counter about twice a second (very cheap).
+- Clipboard: macOS has no "copied" event, so the app checks the clipboard's change counter ten times a second (very cheap: one integer; the content is read only when it changed).
 - Password managers mark their copies as concealed (org.nspasteboard.ConcealedType); the app skips those.
 - Testing on a real Mac: nobody here has one. Options: the director tests each build, or a colleague with a Mac. Decide before step 2.
 

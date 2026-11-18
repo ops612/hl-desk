@@ -64,6 +64,8 @@ let mode: "idle" | "translating" | "done" | "offer" | "downloading" | "failed" =
 let retry: (() => void) | null = null;
 let pinned = false;
 let shownAt = 0;
+/** Between a new double copy (open) and hide: only then may the card be shown. */
+let visible = false;
 let fontsReady: Promise<unknown> | null = null;
 
 function setPrimary(label: string, enabled: boolean): void {
@@ -89,9 +91,12 @@ function clearMessages(): void {
 
 /** Rust sizes and places the window to the card's height (points) and shows it. */
 async function report(): Promise<void> {
+  if (!visible) return;
   if (!fontsReady) fontsReady = document.fonts.ready.catch(() => {});
   await fontsReady;
   await new Promise((r) => requestAnimationFrame(r));
+  // Hidden meanwhile (Esc, a single copy): a late result must never show the card again.
+  if (!visible) return;
   const border = document.body.offsetHeight - document.body.clientHeight;
   const height = Math.ceil(card.getBoundingClientRect().height + border);
   await invoke("translate_card_show", { height }).catch((e) => log("error", `show: ${describe(e)}`));
@@ -100,6 +105,9 @@ async function report(): Promise<void> {
 
 function hide(): void {
   closeMenu();
+  // Ends this card's work: a translation, download step or error that finishes later is ignored.
+  visible = false;
+  token++;
   shownAt = 0;
   void invoke("translate_card_hide").catch((e) => log("error", `hide: ${describe(e)}`));
   touchIdle();
@@ -303,6 +311,7 @@ async function open(): Promise<void> {
   if (!req) return;
   request = req;
   pair = req.pair;
+  visible = true;
   closeMenu();
   sourceEl.textContent = req.text.length > 600 ? `${req.text.slice(0, 600)}…` : req.text;
   sourceEl.scrollTop = 0;
