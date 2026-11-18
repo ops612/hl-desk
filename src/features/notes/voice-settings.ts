@@ -3,6 +3,7 @@
 // mountVoiceSettings(el) once. Rust side: voice_status / voice_set_enabled / voice_download in
 // src-tauri/src/voice.rs (the switch is stored in settings.json). Notes uses it: index.ts.
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { icon } from "../../icons";
 
 type VoiceStatus = {
   supported: boolean;
@@ -24,7 +25,7 @@ function log(level: "info" | "warn" | "error", message: string): void {
 export function mountVoiceSettings(el: HTMLElement): void {
   el.hidden = true;
   el.innerHTML = `
-    <h3 class="sheet-section">Voice to text</h3>
+    <h3 class="sheet-section">${icon("mic")}Voice to text</h3>
     <div class="setting">
       <span class="setting-label">Offline mode<span class="hint voice-hint" role="status">${HINT}</span></span>
       <button class="btn voice-retry" type="button" hidden>Retry</button>

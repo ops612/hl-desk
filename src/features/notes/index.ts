@@ -1,6 +1,9 @@
 // Notes feature. Called once, the first time the Notes tab is shown.
 // List view (search, +, rows) and editor view (plain textarea, autosave). No Save button.
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { icon } from "../../icons";
+import { barScales, clock, meterState, onLevel, type Meter } from "./voice-meter";
 import "./notes.css";
 
 interface NoteSummary {
@@ -53,6 +56,12 @@ const DICTATION_TROUBLE = isMac
 /** Offline voice to text: recording stops by itself after this long (voice.rs stops at 120 s too). */
 const OFFLINE_MAX_MS = 120_000;
 const DICTATION_SETTINGS_URL = "x-apple.systempreferences:com.apple.Keyboard-Settings.extension";
+/** Offline recording heard nothing for 3 s (voice-meter.ts); recording goes on. */
+const NO_SOUND = "No sound. Check your mic.";
+const NO_SOUND_TIP = isMac ? "System Settings > Sound > Input" : "Settings > System > Sound > Input";
+/** The computer's own dictation is running: HL Desk can't tell whether it hears anything, so no
+ *  "Listening" and no bars there, only that it is on. */
+const OS_DICTATION_ON = isMac ? "Dictation is on (Esc to stop)" : "Windows voice typing is on (Esc to stop)";
 
 function log(level: "info" | "warn" | "error", message: string): void {
   invoke("app_log", { level, message: `notes: ${message}` }).catch(() => {});
@@ -84,13 +93,14 @@ const dictateKeys = isMac ? "⌘⇧D" : "Ctrl+Shift+D";
 export function mount(el: HTMLElement): void {
   el.innerHTML = `
     <div class="notes-view notes-list-view">
-      <div class="toolbar">
-        <input class="field" type="search" placeholder="Search notes" aria-label="Search notes"
-          aria-controls="notes-rows" autocomplete="off" spellcheck="false" data-autofocus />
-        <button class="icon-btn notes-list-mic" type="button" aria-label="New note by voice"
-          title="New note by voice">${ICON_MIC}</button>
-        <button class="btn-primary notes-add" type="button" aria-label="New note"
-          title="New note (${isMac ? "⌘" : "Ctrl+"}N)">+</button>
+      <div class="toolbar notes-list-top">
+        <label class="search-field">${icon("search")}<input class="field" type="search" placeholder="Search notes"
+          aria-label="Search notes" aria-controls="notes-rows" autocomplete="off" spellcheck="false" data-autofocus /></label>
+        <div class="notes-actions">
+          <button class="btn-primary notes-add" type="button"
+            title="New note (${isMac ? "⌘" : "Ctrl+"}N)">${icon("pencil")}Type a note</button>
+          <button class="btn notes-list-mic" type="button" title="New note by voice">${icon("mic")}Speak a note</button>
+        </div>
       </div>
       <div class="scroll" id="notes-rows" role="listbox" aria-label="Notes"></div>
       <div class="undo-bar" role="status" hidden>
@@ -109,10 +119,16 @@ export function mount(el: HTMLElement): void {
       </div>
       <textarea class="field notes-body" aria-label="Note"
         placeholder="Start typing. The first line becomes the title."></textarea>
+      <!-- While the words are written down: two soft placeholder lines above the footer. -->
+      <div class="notes-shimmer" aria-hidden="true" hidden><i></i><i></i></div>
     </div>
     <div class="footer">
       <span class="notes-count">Saved automatically</span>
-      <span class="notes-voice" hidden></span>
+      <span class="notes-voice" hidden><span class="voice-bars" aria-hidden="true" hidden><i></i><i></i><i></i><i></i><i></i></span><span
+        class="voice-dots" aria-hidden="true" hidden><i></i><i></i><i></i></span><span
+        class="voice-mic" aria-hidden="true" hidden>${icon("mic", 12)}</span><span
+        class="voice-mic-off" aria-hidden="true" hidden>${icon("micOff", 12)}</span><span class="notes-voice-text"></span></span>
+      <span class="notes-voice-esc" hidden>Esc to stop</span>
       <button class="btn notes-voice-settings" type="button" hidden>Turn on Dictation</button>
     </div>`;
 
@@ -172,14 +188,23 @@ export function mount(el: HTMLElement): void {
     return box;
   }
 
+  /** The next list render follows a search: the rows fade in once. */
+  let fadeNext = false;
+
   function renderList(): void {
     rowsEl.innerHTML = "";
+    if (fadeNext) {
+      fadeNext = false;
+      rowsEl.classList.remove("notes-fade");
+      void rowsEl.offsetWidth; // restarts the animation
+      rowsEl.classList.add("notes-fade");
+    }
     if (!notes.length) {
       const query = search.value.trim();
       rowsEl.append(
         query
           ? emptyState(`No notes match "${query}"`, "Try another word.")
-          : emptyState("Write your first note", `Press + or ${isMac ? "⌘" : "Ctrl+"}N to start.`),
+          : emptyState("Write your first note", `Click Type a note, or press ${isMac ? "⌘" : "Ctrl+"}N.`),
       );
       return;
     }
@@ -222,6 +247,7 @@ export function mount(el: HTMLElement): void {
   search.addEventListener("input", () => {
     clearTimeout(searchTimer);
     selected = 0;
+    fadeNext = true;
     searchTimer = window.setTimeout(() => void refresh(), 120);
   });
   search.addEventListener("keydown", (e) => {
@@ -397,6 +423,14 @@ export function mount(el: HTMLElement): void {
   const micDivider = $(".notes-divider");
   const listMic = $<HTMLButtonElement>(".notes-list-mic");
   const voiceHint = $(".notes-voice");
+  const voiceText = $(".notes-voice-text");
+  const voiceEsc = $(".notes-voice-esc");
+  const bars = $(".voice-bars");
+  const barEls = [...bars.children] as HTMLElement[];
+  const dots = $(".voice-dots");
+  const osMic = $(".voice-mic");
+  const micOff = $(".voice-mic-off");
+  const shimmer = $(".notes-shimmer");
   const voiceSettings = $<HTMLButtonElement>(".notes-voice-settings");
   /** null until notes_dictation_status answers. */
   let voice: { available: boolean; off: boolean } | null = null;
@@ -417,6 +451,35 @@ export function mount(el: HTMLElement): void {
   /** Stop, Esc or closing the note came while the offline microphone was opening. */
   let stopWhileOpening = false;
   let stopReason = "";
+  /** Offline: the microphone level since Rust confirmed the recording (null until then). */
+  let meter: Meter | null = null;
+  let meterTimer: number | undefined;
+
+  function setBars(scales: number[] | null): void {
+    barEls.forEach((bar, i) => (bar.style.transform = scales ? `scaleY(${scales[i].toFixed(3)})` : ""));
+  }
+
+  /** Offline recording confirmed by Rust: from now on "Listening", the timer and the real level. */
+  function meterStart(): void {
+    meter = { since: Date.now(), lastEventAt: null, lastSoundAt: null };
+    setBars(null);
+    clearInterval(meterTimer);
+    meterTimer = window.setInterval(renderVoice, 250);
+  }
+
+  function meterStop(): void {
+    meter = null;
+    clearInterval(meterTimer);
+    setBars(null);
+  }
+
+  // voice.rs sends the peak of each ~100 ms while recording; only that moves the bars.
+  void listen<number>("voice://level", (e) => {
+    if (!meter) return;
+    meter = onLevel(meter, Number(e.payload) || 0, Date.now());
+    if (meterState(meter, Date.now()) === "live") setBars(barScales(Number(e.payload) || 0));
+    renderVoice();
+  });
 
   async function refreshOffline(): Promise<boolean> {
     if (isMac) return false;
@@ -430,7 +493,6 @@ export function mount(el: HTMLElement): void {
     const editor = !editorView.hidden;
     countEl.hidden = editor;
     voiceHint.hidden = !editor;
-    voiceHint.classList.toggle("warn", voiceTrouble);
     mic.hidden = voice !== null && !voice.available;
     micDivider.hidden = mic.hidden;
     listMic.hidden = mic.hidden;
@@ -441,24 +503,56 @@ export function mount(el: HTMLElement): void {
     mic.disabled = writing;
     const off = voice?.off === true && isMac;
     voiceSettings.hidden = !editor || !off;
+    // What sits before the text: live bars (offline, recording), dots (writing), a still mic (the
+    // computer's own dictation), or nothing.
+    let viz: "bars" | "dots" | "mic" | "micOff" | null = null;
+    let esc = false;
+    let text: string;
+    let tip: string | null = null;
     if (voice && !voice.available) {
-      voiceHint.textContent = isMac ? "Dictation isn't available on this Mac" : "Voice typing isn't available on this PC";
+      text = isMac ? "Dictation isn't available on this Mac" : "Voice typing isn't available on this PC";
     } else if (off) {
-      voiceHint.textContent = "Dictation is off on this Mac";
+      text = "Dictation is off on this Mac";
     } else if (writing) {
-      voiceHint.textContent = "Writing it down…";
-    } else if (dictating && offline) {
-      voiceHint.textContent = "Listening… click Stop or press Esc";
+      viz = "dots";
+      text = "Writing it down…";
+    } else if (dictating && offline && !meter) {
+      text = "Starting microphone…";
+      esc = true;
+    } else if (dictating && offline && meter) {
+      const now = Date.now();
+      const state = meterState(meter, now);
+      esc = true;
+      if (state === "silent") {
+        // Still recording; back to Listening when sound comes (voice-meter.ts).
+        viz = "micOff";
+        text = NO_SOUND;
+        tip = NO_SOUND_TIP;
+      } else {
+        viz = "bars";
+        text = `Listening · ${clock(now - meter.since)}`;
+      }
+      // Bars move only with real level events: flat while stale or silent.
+      if (state !== "live") setBars(null);
     } else if (offlineOn) {
-      voiceHint.textContent = "Speak in English (offline mode)";
+      text = "Speak in English (offline mode)";
     } else if (voiceTrouble) {
-      voiceHint.textContent = DICTATION_TROUBLE;
+      text = DICTATION_TROUBLE;
     } else if (dictating) {
-      voiceHint.textContent = "Listening… click the mic or press Esc to stop";
+      viz = "mic";
+      text = OS_DICTATION_ON;
     } else {
-      voiceHint.textContent = "Speak in English, 中文 or 廣東話 (uses your computer's dictation)";
+      text = "Speak in English, 中文 or 廣東話 (uses your computer's dictation)";
     }
-    voiceHint.title = voiceHint.textContent;
+    voiceHint.classList.toggle("warn", voiceTrouble);
+    bars.hidden = viz !== "bars";
+    dots.hidden = viz !== "dots";
+    osMic.hidden = viz !== "mic";
+    micOff.hidden = viz !== "micOff";
+    voiceEsc.hidden = !editor || !esc;
+    shimmer.hidden = !editor || !writing;
+    if (voiceText.textContent !== text) voiceText.textContent = text;
+    voiceHint.title = tip ?? text;
   }
 
   /** end: the user stopped it (mic or Esc), so the computer's dictation is ended too.
@@ -578,10 +672,13 @@ export function mount(el: HTMLElement): void {
       status.textContent = String(e);
       dictating = false;
       offline = false;
+      meterStop();
       api.dictationStop(false).catch(() => {});
       renderVoice();
       return;
     }
+    meterStart();
+    renderVoice();
     clearTimeout(dictationTimer);
     dictationTimer = window.setTimeout(() => void finishOffline("120 s limit"), OFFLINE_MAX_MS);
   }
@@ -590,6 +687,7 @@ export function mount(el: HTMLElement): void {
   function cancelOffline(reason: string): void {
     dictating = false;
     offline = false;
+    meterStop();
     log("info", `offline voice to text: cancelled (${reason})`);
     api.voiceCancel().catch(() => {});
     api.dictationStop(false).catch(() => {});
@@ -600,6 +698,7 @@ export function mount(el: HTMLElement): void {
     if (!offline || !dictating) return;
     clearTimeout(dictationTimer);
     dictating = false;
+    meterStop();
     writing = true;
     renderVoice();
     log("info", `offline voice to text: stop (${reason})`);

@@ -1,13 +1,24 @@
 /* Notes only. Tokens and shared classes (.row, .field, .footer ...) come from src/styles.css. */
 .notes-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.btn-primary.notes-add {
-  width: 30px; padding: 0; border-radius: var(--radius-sm); font-size: 18px; font-weight: 400; line-height: 1; flex: none;
-}
+/* List: search, then "Type a note" (primary) and "Speak a note" side by side, equal width. */
+.toolbar.notes-list-top { flex-direction: column; align-items: stretch; gap: 8px; }
+.notes-list-top .search-field { flex: none; }
+.notes-actions { display: flex; gap: 8px; }
+.notes-actions .btn, .notes-actions .btn-primary { flex: 1; min-width: 0; }
+.notes-actions .btn .ico { color: var(--muted); }
+/* Editor in from the right, the list back from the left (8px, with a fade). */
+.notes-editor-view:not([hidden]) { animation: notes-from-right var(--dur) var(--ease); }
+.notes-list-view:not([hidden]) { animation: notes-from-left var(--dur) var(--ease); }
+@keyframes notes-from-right { from { opacity: 0; transform: translateX(8px); } }
+@keyframes notes-from-left { from { opacity: 0; transform: translateX(-8px); } }
+/* The rows fade in once after a search (no per-row stagger). */
+#notes-rows.notes-fade { animation: fade-in var(--dur-fast) var(--ease); }
 .row.notes-row { display: flex; flex-direction: column; gap: 2px; }
 .notes-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .notes-title, .notes-preview { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .notes-title { flex: 1; min-width: 0; }
-.notes-date { flex: none; color: var(--muted); font-size: 11px; }
+.notes-date { flex: none; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.notes-count { font-variant-numeric: tabular-nums; }
 .notes-title { font-weight: 500; color: var(--ink); }
 .notes-preview { color: var(--muted); }
 .notes-editor-view .toolbar { padding-bottom: 8px; }
@@ -33,6 +44,45 @@
   0% { box-shadow: 0 0 0 0 rgb(47 76 200 / 35%); }
   100% { box-shadow: 0 0 0 6px rgb(47 76 200 / 0%); }
 }
-.notes-voice { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.notes-editor-view { position: relative; }
+/* Footer voice line: bars, dots or a still mic, then the text; "Esc to stop" on the right. */
+.notes-voice { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.notes-voice-text {
+  min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-variant-numeric: tabular-nums;
+}
+.notes-voice-esc { flex: none; margin-left: auto; }
+/* Five small indigo bars, driven by the real microphone level (index.ts sets scaleY). */
+.voice-bars { display: inline-flex; flex: none; align-items: center; gap: 2px; height: 14px; }
+.voice-bars i {
+  width: 2px; height: 14px; border-radius: 1px; background: var(--indigo);
+  transform: scaleY(0.2); transition: transform 100ms var(--ease);
+}
+/* Three dots while the words are written down. */
+.voice-dots { display: inline-flex; flex: none; align-items: center; gap: 3px; height: 14px; }
+.voice-dots i {
+  width: 4px; height: 4px; border-radius: 50%; background: var(--indigo);
+  animation: voice-dot 900ms var(--ease) infinite;
+}
+.voice-dots i:nth-child(2) { animation-delay: 150ms; }
+.voice-dots i:nth-child(3) { animation-delay: 300ms; }
+@keyframes voice-dot { 0%, 60%, 100% { transform: translateY(0); opacity: 0.5; } 30% { transform: translateY(-3px); opacity: 1; } }
+.voice-mic { display: inline-flex; flex: none; color: var(--indigo); }
+.voice-mic-off { display: inline-flex; flex: none; color: var(--muted); }
+/* Two soft placeholder lines inside the bottom of the note while it is written down. */
+.notes-shimmer {
+  position: absolute; left: calc(var(--inset) + 10px); right: calc(var(--inset) + 10px); bottom: calc(var(--inset) + 10px);
+  display: flex; flex-direction: column; gap: 6px; pointer-events: none;
+  animation: fade-in var(--dur) var(--ease);
+}
+.notes-shimmer i {
+  display: block; height: 8px; border-radius: 4px;
+  background: linear-gradient(90deg, var(--indigo-tint) 25%, rgb(47 76 200 / 14%) 50%, var(--indigo-tint) 75%);
+  background-size: 200% 100%; animation: notes-shimmer 1.2s linear infinite;
+}
+.notes-shimmer i:last-child { width: 60%; }
+@keyframes notes-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .voice-bars i { transform: scaleY(0.5) !important; }
+}
 .notes-voice-settings { flex: none; }
 .notes-voice.warn { white-space: normal; color: var(--ink); }

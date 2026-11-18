@@ -13,7 +13,9 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.cb-left { flex: none; color: var(--muted); font-size: 11px; text-align: right; }
+.cb-left { flex: none; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; text-align: right; }
+/* The list fades in once after a search or filter change (no per-row stagger). */
+.cb-list.cb-fade { animation: fade-in var(--dur-fast) var(--ease); }
 
 .cb-actions { display: none; flex: none; gap: 2px; }
 .cb-row:hover .cb-actions { display: flex; }
@@ -27,14 +29,18 @@
 /* Filter chips under the search: All · Text · Images · Files. */
 .cb-chips { display: flex; flex: none; gap: 6px; padding: 0 var(--inset) 8px; }
 .cb-chip {
-  height: 24px; padding: 0 10px; border: 1px solid var(--border); border-radius: 12px;
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 24px; padding: 0 10px 0 8px; border: 1px solid var(--border); border-radius: 12px;
   background: var(--surface); color: var(--muted); font: inherit; font-size: 11px; cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
 }
+.cb-chip:active { transform: scale(0.98); }
 .cb-chip:hover { color: var(--ink); }
 .cb-chip[aria-pressed="true"] {
   border-color: var(--indigo-tint); background: var(--indigo-tint); color: var(--indigo); font-weight: 500;
 }
-.cb-chip:focus-visible { outline: 2px solid var(--indigo); outline-offset: 1px; }
+.cb-chip:focus-visible { outline: 2px solid var(--indigo); outline-offset: 2px; }
 
 /* Image rows: 48 x 32 thumbnail and "Image · W × H". */
 .cb-thumb {
@@ -42,9 +48,19 @@
   border-radius: 6px; background: var(--bg); object-fit: cover;
 }
 
+/* Text and link rows: a 48 x 32 tile like the image thumbnail, with a text or link icon. */
+.cb-tile {
+  flex: none; display: flex; align-items: center; justify-content: center; box-sizing: border-box;
+  width: 48px; height: 32px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg); color: var(--muted);
+}
+.cb-row[aria-selected="true"] .cb-tile { background: var(--surface); }
+
 /* File rows: extension tile, first file name, "+ N more", "missing". */
+/* In a 48px slot (margin), so file names start where text and image rows do. */
 .cb-ext {
   flex: none; display: flex; align-items: center; justify-content: center; width: 32px; height: 32px;
+  margin-right: 16px;
   border-radius: 6px; background: var(--indigo-tint); color: var(--indigo); font-size: 9px; font-weight: 500;
   letter-spacing: 0.5px;
 }

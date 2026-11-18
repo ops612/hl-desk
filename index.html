@@ -49,9 +49,11 @@
     <div class="update-bar updated-line" id="updated-line" role="status" hidden></div>
 
     <nav class="segmented" role="tablist" aria-label="Sections">
-      <button role="tab" type="button" id="tab-clipboard" data-tab="clipboard" aria-controls="panel-clipboard" aria-selected="true">Clipboard</button>
-      <button role="tab" type="button" id="tab-screenshot" data-tab="screenshot" aria-controls="panel-screenshot" aria-selected="false" tabindex="-1">Screenshot</button>
-      <button role="tab" type="button" id="tab-notes" data-tab="notes" aria-controls="panel-notes" aria-selected="false" tabindex="-1">Notes</button>
+      <!-- The selected pill: slides under the chosen tab (main.ts sets --tab). -->
+      <span class="segmented-pill" aria-hidden="true"></span>
+      <button role="tab" type="button" id="tab-clipboard" data-tab="clipboard" data-icon="clipboard" aria-controls="panel-clipboard" aria-selected="true">Clipboard</button>
+      <button role="tab" type="button" id="tab-screenshot" data-tab="screenshot" data-icon="crop" aria-controls="panel-screenshot" aria-selected="false" tabindex="-1">Screenshot</button>
+      <button role="tab" type="button" id="tab-notes" data-tab="notes" data-icon="note" aria-controls="panel-notes" aria-selected="false" tabindex="-1">Notes</button>
     </nav>
 
     <main>
@@ -73,7 +75,7 @@
         <section id="settings-capture"></section>
         <!-- Offline voice to text, Windows only (src/features/notes/voice-settings.ts). -->
         <section id="settings-voice" hidden></section>
-        <h3 class="sheet-section">General</h3>
+        <h3 class="sheet-section" data-icon="sliders">General</h3>
         <label class="setting">
           <span>Open HL Desk at login</span>
           <input class="switch" id="open-at-login" type="checkbox" role="switch" />
@@ -91,7 +93,7 @@
           <button class="btn" id="open-notices" type="button">Open</button>
         </div>
         <p class="setting-error" id="settings-error" role="alert" hidden></p>
-        <h3 class="sheet-section">Shortcuts</h3>
+        <h3 class="sheet-section" data-icon="keyboard">Shortcuts</h3>
         <dl class="shortcuts" id="shortcuts"></dl>
       </div>
       <div class="footer">
