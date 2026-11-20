@@ -3,9 +3,10 @@
 //! bottom-right corner is where Windows' own notifications ("Snip saved to clipboard") appear and
 //! cover it. macOS: bottom-right (its notifications are top-right).
 //! It never takes the keyboard, so a Ctrl+V right after a screenshot still goes to the app the user
-//! was in. Kinds: "cancelled" (a capture was cancelled, about 2 s) and "shot" (a device screenshot
-//! with a "Mark up in HL Desk" button, about 8 s, longer while the pointer is over it). Only one
-//! toast at a time.
+//! was in. Kinds: "cancelled" (a capture was cancelled, about 2 s), "copied" (our own capture was
+//! copied to the clipboard, with a "Mark up" button, about 4 s) and "shot" (a device screenshot
+//! with a "Mark up in HL Desk" button, about 8 s); each waits while the pointer is over it.
+//! Only one toast at a time.
 //!
 //! Windows: the window is built hidden and without the undecorated shadow; its page calls
 //! screenshot_toast_show with its content height once it has drawn, and Rust then sizes, places
@@ -71,6 +72,16 @@ pub fn offer(app: &AppHandle, png: Vec<u8>) {
     open(app, "toast.html?kind=shot", SHOT_W, SHOT_H);
 }
 
+/// "Copied to clipboard" with a thumbnail and "Mark up" for capture `id` (the page reads the
+/// image and opens the editor by id).
+pub fn copied(app: &AppHandle, id: i64) {
+    open(app, &copied_url(id), SHOT_W, SHOT_H);
+}
+
+fn copied_url(id: i64) -> String {
+    format!("toast.html?kind=copied&id={id}")
+}
+
 /// The offered image, left in place (for the toast's thumbnail).
 pub fn pending() -> Option<Vec<u8>> {
     pending_lock().clone()
@@ -90,7 +101,21 @@ pub fn closed(window: &WebviewWindow) {
 }
 
 fn is_shot(window: &WebviewWindow) -> bool {
-    window.url().is_ok_and(|u| u.query().unwrap_or("").contains("kind=shot"))
+    kind(window) == "shot"
+}
+
+fn kind(window: &WebviewWindow) -> String {
+    window.url().map(|u| kind_of(u.query().unwrap_or("")).to_string()).unwrap_or_default()
+}
+
+/// The `kind` in a toast page's query ("kind=copied&id=3" -> "copied").
+fn kind_of(query: &str) -> &str {
+    query.split('&').find_map(|p| p.strip_prefix("kind=")).unwrap_or("")
+}
+
+/// Toasts with a thumbnail ("shot", "copied") are wider than a one-line notice.
+fn has_thumbnail(kind: &str) -> bool {
+    matches!(kind, "shot" | "copied")
 }
 
 /// The toast's number (its label is "toast-<n>").
@@ -102,7 +127,7 @@ fn number(window: &WebviewWindow) -> u64 {
 /// place it in the corner and show it on top, without taking the focus.
 pub fn ready(window: &WebviewWindow, height: f64) {
     SHOWN.fetch_max(number(window), Ordering::SeqCst);
-    let shot = is_shot(window);
+    let shot = has_thumbnail(&kind(window));
     let w = if shot { SHOT_W } else { NOTICE_W };
     let h = if height.is_finite() && height >= 24.0 {
         height.min(400.0)
@@ -262,4 +287,29 @@ fn open(app: &AppHandle, url: &str, w: f64, h: f64) {
             closed(&window);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn copied_toast_is_its_own_kind_with_a_thumbnail() {
+        let url = copied_url(42);
+        let query = url.split_once('?').unwrap().1;
+        assert_eq!(query, "kind=copied&id=42");
+        assert_eq!(kind_of(query), "copied");
+        assert!(has_thumbnail(kind_of(query)));
+        // Closing it must not drop a device screenshot still offered by a "shot" toast.
+        assert_ne!(kind_of(query), "shot");
+    }
+
+    #[test]
+    fn kinds_from_the_query() {
+        assert_eq!(kind_of("kind=shot"), "shot");
+        assert_eq!(kind_of("kind=cancelled"), "cancelled");
+        assert_eq!(kind_of(""), "");
+        assert!(has_thumbnail("shot"));
+        assert!(!has_thumbnail("cancelled"));
+    }
 }

@@ -23,5 +23,7 @@ body.toast-page {
 .toast-thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
 .toast-main { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
 .toast-title { font-size: 12px; font-weight: 500; }
+.toast-copied { display: flex; align-items: center; gap: 6px; }
+.toast-copied svg { flex: none; color: var(--indigo); }
 .toast-markup { height: 30px; }
 .toast-close { align-self: flex-start; margin-top: 6px; }

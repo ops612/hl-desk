@@ -167,7 +167,7 @@ type GuideRow = [string, string, string[], string, boolean?];
 const welcomeItems: GuideRow[] = [
   ["Open HL Desk", isMac ? "Or click HL in the menu bar" : "Or click HL in the tray",
     [cmdKey, shiftKey, "Space"], svg('<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/>')],
-  ["Capture an area", "Drag over anything, then mark it up",
+  ["Capture an area", "Drag over anything, it's copied",
     [cmdKey, shiftKey, "2"], svg('<path d="M6.13 1L6 16a2 2 0 0 0 2 2h15"/><path d="M1 6.13L16 6a2 2 0 0 1 2 2v15"/>')],
   ["Clipboard keeps 1 day", "Copy as usual, then search it here",
     [cmdKey, "C"], svg('<path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/>')],
@@ -177,6 +177,9 @@ const welcomeItems: GuideRow[] = [
 // "New in HL Desk" (What's new on the Updated line): rows per version. A later release adds an
 // entry; a version without one shows the newest entry.
 const whatsNew: Record<string, GuideRow[]> = {
+  "0.1.10": [
+    ["Screenshots copy at once", "Capture, then paste. Mark up from the notice", captureKeys, ICON_IMAGE, true],
+  ],
   "0.1.9": [
     ["Translate text", "Select text in any app, copy twice", copyTwice, ICON_TRANSLATE, true],
     ["Translate a screenshot", "Capture, then click Translate", captureKeys, ICON_IMAGE, true],
