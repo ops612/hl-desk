@@ -4,8 +4,9 @@
 //! Screen Recording prompt). Elsewhere (Windows) it freezes every monitor with xcap and opens our
 //! own selection overlay (overlay.html, one window per monitor, label "overlay-<n>-<i>").
 //! Captures are PNG files in <app data>/screenshots/, listed in
-//! screenshot.db and deleted after 24 hours. Each capture opens in its own editor window
-//! (editor.html, label "editor-<id>").
+//! screenshot.db and deleted after 24 hours. A capture is copied to the clipboard at once, with a
+//! corner notice whose "Mark up" opens it in its own editor window (editor.html, label
+//! "editor-<id>"); an imported device screenshot opens there straight away.
 //! Every capture step is written to the app log (applog.rs); a failed capture shows the main
 //! window with the error on the Screenshot tab (event "screenshot-error"), and a cancelled one
 //! shows a short "Capture cancelled" toast (screenshot/toast.rs).
@@ -204,7 +205,8 @@ fn cleanup(app: &AppHandle) -> Res<usize> {
 
 /// How a capture ended without an error.
 enum Outcome {
-    /// Saved and opened in the editor, or stopped for a reason already shown (macOS permission card).
+    /// Saved and copied (or opened in the editor), or stopped for a reason already shown (macOS
+    /// permission card).
     Done,
     /// The user cancelled (Esc, right-click, the capture key again): a "Capture cancelled" toast.
     Cancelled,
@@ -354,12 +356,15 @@ fn capture(app: &AppHandle) -> Res<Outcome> {
         applog::info("capture: cancelled");
         return Ok(Outcome::Cancelled);
     }
-    add_shot(app, &path, created)?;
+    add_shot(app, &path, created, false)?;
     Ok(Outcome::Done)
 }
 
-/// Lists a new capture file in screenshot.db, tells every window, and opens it in the editor.
-fn add_shot(app: &AppHandle, path: &std::path::Path, created: i64) -> Res<()> {
+/// Lists a new capture file in screenshot.db and tells every window. `edit`: open it in the
+/// editor (an imported device screenshot); otherwise copy it to the clipboard and show the
+/// "Copied to clipboard" notice, falling back to the editor if the copy fails so the shot is
+/// never lost.
+fn add_shot(app: &AppHandle, path: &std::path::Path, created: i64, edit: bool) -> Res<()> {
     let c = conn(app)?;
     c.execute(
         "INSERT INTO shots (path, created_at, updated_at) VALUES (?1, ?2, ?2)",
@@ -369,9 +374,32 @@ fn add_shot(app: &AppHandle, path: &std::path::Path, created: i64) -> Res<()> {
     let id = c.last_insert_rowid();
     applog::info(&format!("capture: saved shot {id} to {}", path.display()));
     let _ = app.emit(CHANGED, ());
+    if !edit {
+        match copy_shot(app, path) {
+            Ok(()) => {
+                applog::info(&format!("capture: copied shot {id}"));
+                toast::copied(app, id);
+                return Ok(());
+            }
+            Err(e) => applog::error(&format!(
+                "capture: could not copy shot {id} ({e}), opening the editor instead"
+            )),
+        }
+    }
     open_editor(app, id)?;
     applog::info(&format!("capture: done, editor-{id} opened"));
     Ok(())
+}
+
+/// Puts a capture file on the clipboard as an image.
+fn copy_shot(app: &AppHandle, path: &std::path::Path) -> Res<()> {
+    let image = xcap::image::open(path).map_err(err)?.into_rgba8();
+    let (width, height) = image.dimensions();
+    // Our own copy: the device-screenshot watcher must not offer it back.
+    watch::mark_own_write();
+    app.clipboard()
+        .write_image(&Image::new(image.as_raw(), width, height))
+        .map_err(err)
 }
 
 /// Writes an image that came from elsewhere (a device screenshot) into the shot storage and
@@ -381,12 +409,12 @@ fn import_png(app: &AppHandle, png: &[u8]) -> Res<()> {
     let path = shots_dir(app)?.join(format!("{created}.png"));
     std::fs::write(&path, png).map_err(err)?;
     applog::info(&format!("device shot: imported ({} bytes)", png.len()));
-    add_shot(app, &path, created)
+    add_shot(app, &path, created, true)
 }
 
 /// Windows (and other systems): freeze every monitor, let the user drag a rectangle on our own
 /// overlay, then crop that monitor's image. CAPTURING stays set while the overlay is open and is
-/// cleared as soon as it closes (before saving and opening the editor), so a key press then
+/// cleared as soon as it closes (before saving and copying), so a key press then
 /// starts a new capture instead of being ignored.
 #[cfg(not(target_os = "macos"))]
 fn capture(app: &AppHandle) -> Res<Outcome> {
@@ -408,7 +436,7 @@ fn capture(app: &AppHandle) -> Res<Outcome> {
     let path = shots_dir(app)?.join(format!("{created}.png"));
     overlay::save_crop(&screens, &pick, &path)
         .map_err(|e| format!("Could not save the capture: {e}"))?;
-    add_shot(app, &path, created)?;
+    add_shot(app, &path, created, false)?;
     Ok(Outcome::Done)
 }
 

@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "toast",
-  "description": "The corner toast windows (label toast-<n>, created in screenshot/toast.rs): Capture cancelled, and Mark up in HL Desk after a device screenshot. They only call app commands (screenshot_toast_*, app_log); app commands are not ACL-checked while the app defines no app manifest (build.rs), so no permission is granted.",
+  "description": "The corner toast windows (label toast-<n>, created in screenshot/toast.rs): Capture cancelled, Copied to clipboard with Mark up after a capture, and Mark up in HL Desk after a device screenshot. They only call app commands (screenshot_toast_*, screenshot_read, screenshot_open, app_log); app commands are not ACL-checked while the app defines no app manifest (build.rs), so no permission is granted.",
   "windows": ["toast-*"],
   "permissions": []
 }
