@@ -3,6 +3,8 @@
 // (translate_card_take), draws, reports its height (translate_card_show: Rust places it near the
 // pointer and shows it) and translates with the shared engine (./engine.ts).
 // Models are downloaded on first use of a pair, after the user clicks Download (about 50-70 MB).
+// Under the offline result, an AI result (online, ./ai.ts) when built with the company gateway
+// and on in Settings.
 import "@fontsource/ibm-plex-sans/400.css";
 import "@fontsource/ibm-plex-sans/500.css";
 import "@fontsource/ibm-plex-sans/600.css";
@@ -26,6 +28,8 @@ import {
   touchIdle,
   translateTexts,
 } from "./engine";
+import { mountAiPanel } from "./ai";
+import { targetOf } from "../translator/logic";
 
 interface CardRequest {
   text: string;
@@ -67,6 +71,14 @@ let shownAt = 0;
 /** Between a new double copy (open) and hide: only then may the card be shown. */
 let visible = false;
 let fontsReady: Promise<unknown> | null = null;
+/** The AI result under the offline one (./ai.ts): the card re-measures when it changes, and
+ * Copy there hides an unpinned card like the main Copy. */
+const ai = mountAiPanel({
+  onChange: () => void report(),
+  onCopied: () => {
+    if (!pinned) window.setTimeout(hide, 600);
+  },
+});
 
 function setPrimary(label: string, enabled: boolean): void {
   primary.textContent = label;
@@ -114,6 +126,7 @@ function hide(): void {
   // Ends this card's work: a translation, download step or error that finishes later is ignored.
   visible = false;
   token++;
+  ai.cancel();
   shownAt = 0;
   void invoke("translate_card_hide").catch((e) => log("error", `hide: ${describe(e)}`));
   touchIdle();
@@ -131,6 +144,8 @@ async function run(): Promise<void> {
   clearMessages();
   translation = "";
   renderLang();
+  // AI runs alongside, whether or not the offline language files are there yet.
+  ai.run(req.text, targetOf(pair));
   if (req.tooLong) {
     resultEl.textContent = "";
     showError("This text is too long to translate here (over 5,000 characters).", null);
@@ -323,6 +338,9 @@ async function open(): Promise<void> {
   sourceEl.scrollTop = 0;
   shownAt = 0;
   log("info", `card opened (${req.script}, ${req.pair}, ${req.text.length} chars)`);
+  // The Settings switch may have changed since the last card.
+  await ai.refresh();
+  if (request !== req) return;
   await run();
 }
 

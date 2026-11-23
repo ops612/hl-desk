@@ -2,7 +2,8 @@
 // with Ctrl+Shift+1 (Cmd+Shift+1 on macOS) or the main window's Translate button. Staff type or
 // paste text and get a live offline translation to copy into WhatsApp. It translates about 500 ms
 // after typing stops, with the shared engine (src/translate/engine.ts) and the same detection and
-// first-use download as the translate card. Pure parts (pickers, debounce, latest wins, voice):
+// first-use download as the translate card. Under it, an AI result (online, src/translate/ai.ts)
+// when HL Desk was built with the company gateway and it is on in Settings. Pure parts (pickers, debounce, latest wins, voice):
 // ./logic.ts. Opens empty after it was hidden; a shortcut press while it is shown only focuses it.
 import "@fontsource/ibm-plex-sans/400.css";
 import "@fontsource/ibm-plex-sans/500.css";
@@ -25,6 +26,7 @@ import {
   touchIdle,
   translateTexts,
 } from "../translate/engine";
+import { mountAiPanel } from "../translate/ai";
 import {
   LABELS,
   Latest,
@@ -78,6 +80,8 @@ let mode: "empty" | "translating" | "done" | "offer" | "downloading" | "failed" 
 let retry: (() => void) | null = null;
 let copiedTimer = 0;
 const latest = new Latest();
+/** The AI result under the offline one (src/translate/ai.ts); one request per settled input. */
+const ai = mountAiPanel();
 /** Download progress (bytes done) per pair being downloaded: typing on does not restart it. */
 const downloading = new Map<PairId, number>();
 
@@ -154,9 +158,11 @@ async function run(): Promise<void> {
     setPrimary("Copy", false);
     renderPickers();
     renderSpeak();
+    ai.cancel();
     return;
   }
   if (text.length > MAX_CHARS) {
+    ai.run(text, null);
     translation = "";
     showResult("");
     showError("This text is too long to translate here (over 5,000 characters).", null);
@@ -172,6 +178,8 @@ async function run(): Promise<void> {
   }
   renderPickers();
   const next = resolve(picks, detected);
+  // AI runs whether or not the offline language files are there yet, and never waits for them.
+  ai.run(text, next ? targetOf(next) : null);
   if (!next) {
     translation = "";
     mode = "empty";
@@ -330,6 +338,7 @@ speech?.addEventListener("voiceschanged", renderSpeak);
 function hide(): void {
   typing.cancel();
   latest.cancel();
+  ai.cancel();
   speech?.cancel();
   void getCurrentWindow().hide().catch((e) => log("error", `hide: ${describe(e)}`));
   touchIdle();
@@ -391,10 +400,13 @@ fillSelect(sourceSel, SOURCES);
 fillSelect(targetSel, TARGETS);
 renderPickers();
 // Rust: fresh = it was hidden (start empty), else it was already open (only focus).
-void listen<boolean>("translator://open", (e) => {
+void listen<boolean>("translator://open", async (e) => {
+  // The Settings switch may have changed while the window was hidden.
+  await ai.refresh();
   if (e.payload) reset();
   focusText();
 });
+void ai.refresh();
 window.addEventListener("focus", focusText, { once: true });
 log("info", "page loaded");
 focusText();

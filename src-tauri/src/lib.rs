@@ -1,3 +1,4 @@
+mod ai;
 mod applog;
 mod clipboard;
 mod db;
@@ -200,6 +201,7 @@ pub fn run() {
     let ocr_commands = ocr::commands();
     let settings_commands = settings::commands();
     let translate_commands = translate::commands();
+    let ai_commands = ai::commands();
     let translator_commands = translator::commands();
     let voice_commands = voice::commands();
     let app_commands = applog::commands();
@@ -256,6 +258,9 @@ pub fn run() {
                 ocr_commands(invoke)
             } else if command.starts_with("settings_") {
                 settings_commands(invoke)
+            } else if command.starts_with("translate_ai") {
+                // Before "translate_": AI translation (ai.rs) has its own handler.
+                ai_commands(invoke)
             } else if command.starts_with("translate_") {
                 translate_commands(invoke)
             } else if command.starts_with("translator_") {

@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "typecheck": "tsc --noEmit",
-    "test": "node --test src/features/notes/voice-meter.test.ts src/toast/kind.test.ts src/translator/logic.test.ts src/editor/copy-text.test.ts src/editor/crop-text.test.ts",
+    "test": "node --test src/features/notes/voice-meter.test.ts src/toast/kind.test.ts src/translator/logic.test.ts src/translate/ai-logic.test.ts src/editor/copy-text.test.ts src/editor/crop-text.test.ts",
     "build": "tsc --noEmit && vite build",
     "tauri": "tauri",
     "icons:tray": "node scripts/make-tray-icons.mjs"

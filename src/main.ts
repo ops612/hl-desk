@@ -11,6 +11,7 @@ import { mountVoiceSettings } from "./features/notes/voice-settings";
 import * as screenshot from "./features/screenshot";
 import { mountPermission } from "./features/screenshot/permission";
 import { mountCaptureSettings } from "./features/screenshot/settings";
+import { mountAiSettings } from "./translate/ai-settings";
 import { fillIcons } from "./icons";
 import { openReleaseNotes, startUpdater } from "./updater";
 
@@ -92,6 +93,7 @@ const shortcuts: [string, string][] = [
 ];
 mountCaptureSettings(document.getElementById("settings-capture")!);
 mountVoiceSettings(document.getElementById("settings-voice")!);
+mountAiSettings(document.getElementById("settings-translate")!);
 document.getElementById("shortcuts")!.innerHTML = shortcuts
   .map(([what, keys]) => `<div><dt>${what}</dt><dd><kbd>${keys}</kbd></dd></div>`)
   .join("");
@@ -180,6 +182,9 @@ const welcomeItems: GuideRow[] = [
 // "New in HL Desk" (What's new on the Updated line): rows per version. A later release adds an
 // entry; a version without one shows the newest entry.
 const whatsNew: Record<string, GuideRow[]> = {
+  "0.1.13": [
+    ["AI translation", "A second, more natural result under Offline", translatorKeys, ICON_TRANSLATE, true],
+  ],
   "0.1.12": [
     ["Copy text from a screenshot", "Capture, then click Copy text", captureKeys, ICON_IMAGE, true],
   ],

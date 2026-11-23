@@ -4,7 +4,7 @@
 //! translate_model_file, translate_copy, whose own-copy guard keeps the double-copy card away).
 //!
 //! Opened with Ctrl+Shift+1 (Cmd+Shift+1 on macOS) or the main window's Translate button
-//! (translator_open). Created on first use, about 380x440, always on top, centred; Esc or the
+//! (translator_open). Created on first use, about 380x540 (room for the AI panel, ai.rs), always on top, centred; Esc or the
 //! close button hide it (the page). Opening a hidden window tells the page to start empty;
 //! opening a shown one only focuses it.
 
@@ -16,7 +16,7 @@ use crate::applog;
 const LABEL: &str = "translator";
 const OPEN_EVENT: &str = "translator://open";
 const WIDTH: f64 = 380.0;
-const HEIGHT: f64 = 440.0;
+const HEIGHT: f64 = 540.0;
 
 /// Cmd+Shift+1 on macOS, Ctrl+Shift+1 elsewhere.
 fn shortcut() -> Shortcut {
@@ -52,7 +52,7 @@ fn open(app: &AppHandle) {
     let builder = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("translator.html".into()))
         .title("HL Desk Translate")
         .inner_size(WIDTH, HEIGHT)
-        .min_inner_size(320.0, 360.0)
+        .min_inner_size(320.0, 420.0)
         .center()
         .decorations(false)
         .always_on_top(true)

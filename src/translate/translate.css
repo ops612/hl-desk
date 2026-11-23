@@ -57,3 +57,26 @@ body.tr-page {
 .tr-menu .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; white-space: nowrap; }
 .tr-menu .row[aria-checked="true"] { color: var(--indigo); font-weight: 500; }
 .tr-footer { margin-top: 0; }
+
+/* AI translation panel (src/translate/ai.ts), under the offline result in the card and in the
+   Translate window: label with sparkles, its own Copy, the result, a muted error, the online note. */
+.ai-panel {
+  display: flex; flex-direction: column; gap: 6px; padding: 8px 10px 8px;
+  border: 1px solid var(--indigo); border-radius: var(--radius); background: var(--surface);
+}
+.ai-panel[hidden] { display: none; }
+.ai-head { display: flex; flex: none; align-items: center; justify-content: space-between; gap: 8px; }
+.ai-label {
+  display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 500;
+  letter-spacing: 1px; color: var(--indigo);
+}
+.ai-copy { height: 26px; padding: 0 12px; border-radius: var(--radius-sm); font-size: 12px; }
+.ai-out {
+  margin: 0; max-height: 160px; overflow-y: auto; font-size: 14px; line-height: 20px;
+  white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; cursor: text;
+  transition: color var(--dur-fast) var(--ease);
+}
+.ai-out.pending { color: var(--muted); }
+.ai-out:empty { display: none; }
+.ai-error { margin: 0; font-size: 12px; line-height: 17px; color: var(--muted); }
+.ai-note { margin: 0; font-size: 11px; line-height: 15px; color: var(--muted); }

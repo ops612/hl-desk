@@ -33,6 +33,21 @@
           <p class="tr-get-status hint" id="get-status" hidden></p>
         </section>
         <p class="tr-error" id="error" role="alert" hidden></p>
+        <!-- AI translation (online, src/translate/ai.ts): only when built with the gateway and on in Settings. -->
+        <section class="ai-panel" id="ai" aria-labelledby="ai-label" hidden>
+          <div class="ai-head">
+            <span class="ai-label" id="ai-label">
+              <!-- Sparkles, drawn for HL Desk. -->
+              <svg width="12" height="12" viewBox="0 0 24 24" aria-hidden="true" fill="currentColor">
+                <path d="M10 3l1.9 5.6L17.5 10.5l-5.6 1.9L10 18l-1.9-5.6L2.5 10.5l5.6-1.9z" />
+                <path d="M19 14l.9 2.6 2.6.9-2.6.9L19 21l-.9-2.6-2.6-.9 2.6-.9z" />
+              </svg>AI</span>
+            <button class="btn-primary ai-copy" id="ai-copy" type="button" disabled>Copy</button>
+          </div>
+          <p class="ai-out" id="ai-out" aria-live="polite"></p>
+          <p class="ai-error" id="ai-error" hidden></p>
+          <p class="ai-note">AI sends the text online · turn off in Settings</p>
+        </section>
       </div>
       <div class="tr-actions">
         <div class="tr-picker">

@@ -17,6 +17,11 @@ jobs:
     name: macOS (universal, signed + notarized)
     runs-on: macos-latest
     timeout-minutes: 60
+    env:
+      # AI translation (src-tauri/src/ai.rs): the company Claude gateway, baked in at compile time
+      # with option_env!. Unset or empty (no secret yet): the app builds and hides the AI panel.
+      HL_GATEWAY_URL: ${{ vars.HL_GATEWAY_URL }}
+      HL_GATEWAY_TOKEN: ${{ secrets.HL_GATEWAY_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
@@ -193,6 +198,10 @@ jobs:
       GGML_AVX512: "OFF"
       CFLAGS: "-D__F16C__"
       CXXFLAGS: "-D__F16C__"
+      # AI translation (src-tauri/src/ai.rs): the company Claude gateway, baked in at compile time
+      # with option_env!. Unset or empty (no secret yet): the app builds and hides the AI panel.
+      HL_GATEWAY_URL: ${{ vars.HL_GATEWAY_URL }}
+      HL_GATEWAY_TOKEN: ${{ secrets.HL_GATEWAY_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
