@@ -1,5 +1,5 @@
 // Translate window (translator.html, label "translator"), opened by src-tauri/src/translator.rs
-// with Ctrl+Shift+1 (Cmd+Shift+1 on macOS) or the main window's Translate button. Staff type or
+// with its shortcut (Settings > Shortcuts; Ctrl+Shift+1 / Cmd+Shift+1 by default) or the main window's Translate button. Staff type or
 // paste text and get a live offline translation to copy into WhatsApp. It translates about 500 ms
 // after typing stops, with the shared engine (src/translate/engine.ts) and the same detection and
 // first-use download as the translate card. Under it, an AI result (online, src/translate/ai.ts)
@@ -27,6 +27,8 @@ import {
   translateTexts,
 } from "../translate/engine";
 import { mountAiPanel } from "../translate/ai";
+import { formatCombo } from "../shortcuts/combo";
+import { watchShortcuts } from "../shortcuts/current";
 import {
   LABELS,
   Latest,
@@ -395,7 +397,10 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-if (isMac) $("hint").textContent = "Cmd+Shift+1 open · Cmd+Enter copy result · Esc close";
+// The open shortcut as set in Settings > Shortcuts (src/shortcuts/).
+watchShortcuts((c) => {
+  $("hint").textContent = `${formatCombo(c.translate, isMac, true)} open · ${isMac ? "Cmd" : "Ctrl"}+Enter copy result · Esc close`;
+});
 fillSelect(sourceSel, SOURCES);
 fillSelect(targetSel, TARGETS);
 renderPickers();

@@ -5,6 +5,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { icon } from "../../icons";
 import "./settings.css";
+import { formatCombo } from "../../shortcuts/combo";
+import { watchShortcuts } from "../../shortcuts/current";
 
 /** "off" | "ok" | "owned" (the system still uses the key) | "check" (could not tell) | "failed". */
 type DeviceKey = "off" | "ok" | "owned" | "check" | "failed";
@@ -12,7 +14,8 @@ type DeviceKey = "off" | "ok" | "owned" | "check" | "failed";
 type CaptureSettings = { key: "default" | "device"; deviceKey: DeviceKey; markup: boolean; folderBlocked: boolean };
 
 const isMac = navigator.userAgent.includes("Mac");
-const DEFAULT_KEY = isMac ? "⌘⇧2" : "Ctrl+Shift+2";
+/** HL Desk's own capture shortcut as set in Settings > Shortcuts (filled in by watchShortcuts). */
+let DEFAULT_KEY = isMac ? "⌘⇧2" : "Ctrl+Shift+2";
 const DEVICE_KEY = isMac ? "⌘⇧4" : "Print Screen";
 const OPEN_LABEL = isMac ? "Open Keyboard Settings" : "Open keyboard settings";
 const MARKUP_HINT = `After ${isMac ? "⌘⇧4" : "Win+Shift+S"}, a preview in the corner offers to open it in the editor.`;
@@ -98,6 +101,13 @@ export function mountCaptureSettings(el: HTMLElement): void {
   };
 
   const refresh = () => invoke<CaptureSettings>("screenshot_capture_settings").then(show).catch(showError);
+  // The "default" option and the hints name the capture shortcut as set in Settings > Shortcuts.
+  const defaultOption = el.querySelector<HTMLOptionElement>('option[value="default"]')!;
+  watchShortcuts((c) => {
+    DEFAULT_KEY = formatCombo(c.capture, isMac);
+    defaultOption.textContent = DEFAULT_KEY;
+    void refresh();
+  });
 
   keySelect.addEventListener("change", () => {
     invoke<CaptureSettings>("screenshot_set_capture_key", { key: keySelect.value })

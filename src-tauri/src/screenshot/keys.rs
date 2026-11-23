@@ -1,11 +1,12 @@
-//! Capture keys. Ctrl+Shift+2 (Cmd+Shift+2 on macOS) is always registered, so there is a key
-//! that works whatever the system does. The setting "device" adds the key the computer itself
+//! Capture keys. HL Desk's own capture shortcut (Ctrl+Shift+2 / Cmd+Shift+2 by default, changeable
+//! in Settings > Shortcuts) is always registered by shortcuts.rs, so there is a key that works
+//! whatever the system does. The setting "device" adds the key the computer itself
 //! uses for screenshots: Print Screen on Windows, Cmd+Shift+4 on macOS. The system usually owns
 //! that key (Snipping Tool, macOS Screenshots), so the Settings sheet shows a hint with a button
 //! that opens the exact system setting until the user turns the system's use of it off.
 
 use tauri::AppHandle;
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Shortcut, ShortcutState};
 
 use crate::applog;
 
@@ -13,19 +14,13 @@ use crate::applog;
 pub const DEFAULT: &str = "default";
 pub const DEVICE: &str = "device";
 
-/// Cmd+Shift+2 on macOS, Ctrl+Shift+2 elsewhere. Always registered.
-fn default_shortcut() -> Shortcut {
-    #[cfg(target_os = "macos")]
-    let main = Modifiers::SUPER;
-    #[cfg(not(target_os = "macos"))]
-    let main = Modifiers::CONTROL;
-    Shortcut::new(Some(main | Modifiers::SHIFT), Code::Digit2)
-}
-
 /// The computer's own screenshot key: Cmd+Shift+4 on macOS, Print Screen elsewhere.
 fn device_shortcut() -> Shortcut {
     #[cfg(target_os = "macos")]
-    let shortcut = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::Digit4);
+    let shortcut = {
+        use tauri_plugin_global_shortcut::Modifiers;
+        Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::Digit4)
+    };
     #[cfg(not(target_os = "macos"))]
     let shortcut = Shortcut::new(None, Code::PrintScreen);
     shortcut
@@ -47,20 +42,16 @@ fn register(app: &AppHandle, shortcut: Shortcut, name: &'static str) -> Result<(
         .map_err(|e| e.to_string())
 }
 
-/// Called once at start-up: the default key, then the device key if it is chosen.
+/// Called once at start-up, after shortcuts.rs: the device key if it is chosen.
 pub fn init(app: &AppHandle) {
-    match register(app, default_shortcut(), "capture shortcut") {
-        Ok(()) => applog::info("screenshot: capture shortcut registered"),
-        Err(e) => applog::error(&format!("screenshot: could not register the capture shortcut: {e}")),
-    }
     let key = crate::settings::capture_key(app);
     if key == DEVICE {
         apply(app, &key);
     }
 }
 
-/// Registers the device key when `key` is "device", unregisters it otherwise. The default key
-/// stays registered either way.
+/// Registers the device key when `key` is "device", unregisters it otherwise. The capture
+/// shortcut (shortcuts.rs) stays registered either way.
 pub fn apply(app: &AppHandle, key: &str) {
     let shortcuts = app.global_shortcut();
     let registered = shortcuts.is_registered(device_shortcut());

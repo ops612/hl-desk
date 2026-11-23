@@ -2,7 +2,7 @@
 //! "welcome seen", the screenshot capture settings (capture key, mark up after a device
 //! screenshot; changed through screenshot.rs commands) and the translate card's last language
 //! picks (translate.rs), the offline voice to text switch (voice.rs, Windows) and the AI translation
-//! switch (ai.rs). Open at login is kept by the OS itself (tauri-plugin-autostart: a LaunchAgent
+//! switch (ai.rs) and the changed global shortcuts (shortcuts.rs). Open at login is kept by the OS itself (tauri-plugin-autostart: a LaunchAgent
 //! on macOS, the HKCU Run key on Windows), so it is always read from there, never stored here.
 //! Commands are named "settings_<name>" and routed here by lib.rs.
 
@@ -34,6 +34,10 @@ struct Stored {
     /// AI translation (online, ai.rs): a second result from the company Claude gateway under the
     /// offline one. On by default.
     ai_translate: bool,
+    /// Global shortcuts changed in Settings > Shortcuts, by id ("open", "capture", "translate"),
+    /// e.g. {"capture": "Ctrl+Alt+KeyS"}. Only changed ones are kept; missing means the default.
+    /// Used by shortcuts.rs.
+    shortcuts: BTreeMap<String, String>,
 }
 
 impl Default for Stored {
@@ -45,6 +49,7 @@ impl Default for Stored {
             translate_picks: BTreeMap::new(),
             offline_voice: false,
             ai_translate: true,
+            shortcuts: BTreeMap::new(),
         }
     }
 }
@@ -95,16 +100,16 @@ fn load(app: &AppHandle) -> Stored {
             stored.markup_after_shot = v;
         }
         if let Some(v) = obj.get("translatePicks").and_then(|v| v.as_object()) {
-            stored.translate_picks = v
-                .iter()
-                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                .collect();
+            stored.translate_picks = string_map(v);
         }
         if let Some(v) = obj.get("offlineVoice").and_then(|v| v.as_bool()) {
             stored.offline_voice = v;
         }
         if let Some(v) = obj.get("aiTranslate").and_then(|v| v.as_bool()) {
             stored.ai_translate = v;
+        }
+        if let Some(v) = obj.get("shortcuts").and_then(|v| v.as_object()) {
+            stored.shortcuts = string_map(v);
         }
         applog::warn("settings: kept the values that could be read");
         return stored;
@@ -115,6 +120,13 @@ fn load(app: &AppHandle) -> Stored {
         Err(e) => applog::error(&format!("settings: could not copy settings.json to {}: {e}", bad.display())),
     }
     Stored::default()
+}
+
+/// The string values of a JSON object (others are dropped).
+fn string_map(obj: &serde_json::Map<String, serde_json::Value>) -> BTreeMap<String, String> {
+    obj.iter()
+        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+        .collect()
 }
 
 fn save(app: &AppHandle, stored: &Stored) -> Result<(), String> {
@@ -199,6 +211,23 @@ pub fn set_ai_translate(app: &AppHandle, on: bool) -> Result<(), String> {
     update(app, |s| s.ai_translate = on)
 }
 
+/// The changed global shortcuts by id; read by shortcuts.rs at start-up.
+pub fn shortcuts(app: &AppHandle) -> BTreeMap<String, String> {
+    load(app).shortcuts
+}
+
+/// Saves a changed shortcut, or forgets it (None: back to the default).
+pub fn set_shortcut(app: &AppHandle, id: &str, combo: Option<&str>) -> Result<(), String> {
+    update(app, |s| match combo {
+        Some(c) => {
+            s.shortcuts.insert(id.to_string(), c.to_string());
+        }
+        None => {
+            s.shortcuts.remove(id);
+        }
+    })
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct View {
@@ -238,4 +267,29 @@ fn settings_set_welcome_seen(app: AppHandle, seen: bool) -> Result<(), String> {
 
 pub fn commands() -> impl Fn(Invoke) -> bool + Send + Sync + 'static {
     tauri::generate_handler![settings_get, settings_set_open_at_login, settings_set_welcome_seen]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_settings_files_keep_working() {
+        // A 0.1.13 file has no "shortcuts": every shortcut is the default.
+        let old = br#"{"welcomeSeen": true, "captureKey": "device", "aiTranslate": false}"#;
+        let s: Stored = serde_json::from_slice(old).unwrap();
+        assert!(s.welcome_seen);
+        assert_eq!(s.capture_key, "device");
+        assert!(s.shortcuts.is_empty());
+    }
+
+    #[test]
+    fn changed_shortcuts_round_trip() {
+        let mut s = Stored::default();
+        s.shortcuts.insert("capture".into(), "Ctrl+Alt+KeyS".into());
+        let json = serde_json::to_vec(&s).unwrap();
+        assert!(String::from_utf8_lossy(&json).contains(r#""shortcuts":{"capture":"Ctrl+Alt+KeyS"}"#));
+        let back: Stored = serde_json::from_slice(&json).unwrap();
+        assert_eq!(back.shortcuts.get("capture").map(String::as_str), Some("Ctrl+Alt+KeyS"));
+    }
 }
