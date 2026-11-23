@@ -12,6 +12,9 @@ import * as screenshot from "./features/screenshot";
 import { mountPermission } from "./features/screenshot/permission";
 import { mountCaptureSettings } from "./features/screenshot/settings";
 import { mountAiSettings } from "./translate/ai-settings";
+import { comboParts } from "./shortcuts/combo";
+import { watchShortcuts } from "./shortcuts/current";
+import { mountShortcutSettings } from "./shortcuts/settings";
 import { fillIcons } from "./icons";
 import { openReleaseNotes, startUpdater } from "./updater";
 
@@ -79,11 +82,9 @@ function setPinned(on: boolean): void {
 pinBtn.addEventListener("click", () => setPinned(pinBtn.getAttribute("aria-pressed") !== "true"));
 
 // ---- Settings sheet ----
+// Open, capture and Translate window are changeable (src/shortcuts/settings.ts, above this list).
 const shortcuts: [string, string][] = [
-  ["Open or close HL Desk", `${mod}${isMac ? "⇧" : "Shift+"}Space`],
   ["Clipboard, Screenshot, Notes", `${mod}1, ${mod}2, ${mod}3`],
-  ["Open the Translate window", `${mod}${isMac ? "⇧" : "Shift+"}1`],
-  ["Capture an area", `${mod}${isMac ? "⇧" : "Shift+"}2`],
   ["Editor: number, pen, crop, undo", `N, P, C, ${mod}Z`],
   ["Pin a clipboard item", `${mod}P`],
   ["New note", `${mod}N`],
@@ -94,6 +95,10 @@ const shortcuts: [string, string][] = [
 mountCaptureSettings(document.getElementById("settings-capture")!);
 mountVoiceSettings(document.getElementById("settings-voice")!);
 mountAiSettings(document.getElementById("settings-translate")!);
+const stopShortcutRecording = mountShortcutSettings(
+  document.getElementById("shortcut-keys")!,
+  document.getElementById("shortcuts-reset") as HTMLButtonElement,
+);
 document.getElementById("shortcuts")!.innerHTML = shortcuts
   .map(([what, keys]) => `<div><dt>${what}</dt><dd><kbd>${keys}</kbd></dd></div>`)
   .join("");
@@ -147,6 +152,7 @@ function openSheet(): void {
 
 function closeSheet(restoreFocus = true): void {
   if (sheet.hidden) return;
+  stopShortcutRecording();
   sheet.hidden = true;
   openBtn.setAttribute("aria-expanded", "false");
   if (restoreFocus) openBtn.focus();
@@ -163,16 +169,20 @@ const ICON_TRANSLATE = svg('<circle cx="12" cy="12" r="10"/><path d="M2 12h20"/>
 const ICON_IMAGE = svg('<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>');
 const ICON_MIC = svg('<path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v4M8 23h8"/>');
 const copyTwice = [cmdKey, "C", "C"];
-const captureKeys = [cmdKey, shiftKey, "2"];
+// The global shortcuts as set in Settings > Shortcuts; refilled in place when they change, so
+// the rows below always show the current keys.
+const openKeys: string[] = [];
+const captureKeys: string[] = [];
+const translatorKeys: string[] = [];
 const dictateKeys = [cmdKey, shiftKey, "D"];
-const translatorKeys = [cmdKey, shiftKey, "1"];
+const ICON_KEYBOARD = svg('<rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h.01M18 14h.01M10 14h4"/>');
 // [title, hint, keys, icon, new?]
 type GuideRow = [string, string, string[], string, boolean?];
 const welcomeItems: GuideRow[] = [
   ["Open HL Desk", isMac ? "Or click HL in the menu bar" : "Or click HL in the tray",
-    [cmdKey, shiftKey, "Space"], svg('<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/>')],
+    openKeys, svg('<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/>')],
   ["Capture an area", "Drag over anything, it's copied",
-    [cmdKey, shiftKey, "2"], svg('<path d="M6.13 1L6 16a2 2 0 0 0 2 2h15"/><path d="M1 6.13L16 6a2 2 0 0 1 2 2v15"/>')],
+    captureKeys, svg('<path d="M6.13 1L6 16a2 2 0 0 0 2 2h15"/><path d="M1 6.13L16 6a2 2 0 0 1 2 2v15"/>')],
   ["Clipboard keeps 1 day", "Copy as usual, then search it here",
     [cmdKey, "C"], svg('<path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/>')],
   ["Translate", "Select text, copy twice. Screenshots: Translate button", copyTwice, ICON_TRANSLATE],
@@ -182,6 +192,9 @@ const welcomeItems: GuideRow[] = [
 // "New in HL Desk" (What's new on the Updated line): rows per version. A later release adds an
 // entry; a version without one shows the newest entry.
 const whatsNew: Record<string, GuideRow[]> = {
+  "0.1.14": [
+    ["Your own shortcuts", "Settings > Shortcuts, click one to change it", [], ICON_KEYBOARD, true],
+  ],
   "0.1.13": [
     ["AI translation", "A second, more natural result under Offline", translatorKeys, ICON_TRANSLATE, true],
   ],
@@ -200,6 +213,11 @@ const whatsNew: Record<string, GuideRow[]> = {
     ["Voice to text", "Click the mic in a note and speak", dictateKeys, ICON_MIC],
   ],
 };
+watchShortcuts((c) => {
+  openKeys.splice(0, openKeys.length, ...comboParts(c.open, isMac));
+  captureKeys.splice(0, captureKeys.length, ...comboParts(c.capture, isMac));
+  translatorKeys.splice(0, translatorKeys.length, ...comboParts(c.translate, isMac));
+});
 const keycaps = (keys: string[]) => keys.map((k) => `<kbd class="keycap">${k}</kbd>`).join("");
 const guideRows = (rows: GuideRow[]) =>
   rows
@@ -267,7 +285,7 @@ welcomeDone.addEventListener("click", () => {
 document.getElementById("welcome-release-notes")!.addEventListener("click", () => {
   if (whatsNewVersion) openReleaseNotes(whatsNewVersion);
 });
-// Translate window (src-tauri/src/translator.rs): the header button, as Ctrl+Shift+1 / Cmd+Shift+1.
+// Translate window (src-tauri/src/translator.rs): the header button, as its shortcut (Settings > Shortcuts).
 document.getElementById("translator-open")!.addEventListener("click", () => {
   invoke("translator_open").catch(() => {});
 });

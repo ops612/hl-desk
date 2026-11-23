@@ -6,6 +6,7 @@ mod notes;
 mod ocr;
 mod screenshot;
 mod settings;
+mod shortcuts;
 mod translate;
 mod translator;
 mod voice;
@@ -21,16 +22,6 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Manager, WindowEvent,
 };
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
-
-/// Cmd+Shift+Space on macOS, Ctrl+Shift+Space elsewhere.
-fn toggle_shortcut() -> Shortcut {
-    #[cfg(target_os = "macos")]
-    let main = Modifiers::SUPER;
-    #[cfg(not(target_os = "macos"))]
-    let main = Modifiers::CONTROL;
-    Shortcut::new(Some(main | Modifiers::SHIFT), Code::Space)
-}
 
 /// When the main window last hid itself because it lost focus (Unix ms).
 static BLUR_HIDDEN_AT: AtomicU64 = AtomicU64::new(0);
@@ -117,7 +108,8 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn toggle_window(app: &AppHandle) {
+/// The open shortcut (shortcuts.rs) and a click on the tray icon.
+pub(crate) fn toggle_window(app: &AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
@@ -200,6 +192,7 @@ pub fn run() {
     let notes_commands = notes::commands();
     let ocr_commands = ocr::commands();
     let settings_commands = settings::commands();
+    let shortcuts_commands = shortcuts::commands();
     let translate_commands = translate::commands();
     let ai_commands = ai::commands();
     let translator_commands = translator::commands();
@@ -218,15 +211,8 @@ pub fn run() {
                 show_main_window(app);
             }
         }))
-        .plugin(
-            tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(|app, shortcut, event| {
-                    if shortcut == &toggle_shortcut() && event.state() == ShortcutState::Pressed {
-                        toggle_window(app);
-                    }
-                })
-                .build(),
-        )
+        // Each global shortcut has its own handler (shortcuts.rs, screenshot/keys.rs).
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_drag::init())
@@ -258,6 +244,8 @@ pub fn run() {
                 ocr_commands(invoke)
             } else if command.starts_with("settings_") {
                 settings_commands(invoke)
+            } else if command.starts_with("shortcuts_") {
+                shortcuts_commands(invoke)
             } else if command.starts_with("translate_ai") {
                 // Before "translate_": AI translation (ai.rs) has its own handler.
                 ai_commands(invoke)
@@ -280,13 +268,9 @@ pub fn run() {
                 app.package_info().version,
                 std::env::args_os().skip(1).collect::<Vec<_>>()
             ));
-            // Another app may already own the shortcut: keep running (tray icon still opens
-            // HL Desk) and say so in the log, instead of quitting at launch.
-            if let Err(e) = app.global_shortcut().register(toggle_shortcut()) {
-                applog::warn(&format!(
-                    "could not register the open shortcut (another app may use it): {e}"
-                ));
-            }
+            // Open, capture and Translate window shortcuts (Settings > Shortcuts). One another
+            // app owns is logged and HL Desk keeps running (the tray icon still opens it).
+            shortcuts::init(app.handle());
 
             // Windows: a tray popover, so no maximize or minimize button and a fixed size
             // (macOS keeps the window from tauri.conf.json).
@@ -332,7 +316,6 @@ pub fn run() {
             screenshot::init(handle);
             notes::init(handle);
             translate::init(handle);
-            translator::init(handle);
 
             // First run: open at login is turned on and the window opens with the welcome card.
             // Started at login (--hidden): tray icon only. Started by hand: show the window.

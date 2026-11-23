@@ -104,8 +104,11 @@
           <button class="btn" id="open-notices" type="button">Open</button>
         </div>
         <p class="setting-error" id="settings-error" role="alert" hidden></p>
-        <h3 class="sheet-section" data-icon="keyboard">Shortcuts</h3>
+        <h3 class="sheet-section" data-icon="keyboard">Shortcuts<span class="sc-hint">Click a shortcut to change it</span></h3>
+        <!-- The three global shortcuts, changeable (src/shortcuts/settings.ts); the in-window keys under them. -->
+        <div id="shortcut-keys"></div>
         <dl class="shortcuts" id="shortcuts"></dl>
+        <div class="sc-foot"><button class="link-btn" id="shortcuts-reset" type="button" hidden>Reset all to defaults</button></div>
       </div>
       <div class="footer">
         <span id="app-version">HL Desk</span>

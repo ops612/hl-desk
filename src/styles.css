@@ -264,6 +264,22 @@ label.setting { cursor: pointer; }
 }
 .shortcuts dt { color: var(--ink); }
 .shortcuts dd { margin: 0; color: var(--muted); }
+/* Settings > Shortcuts (src/shortcuts/settings.ts): a key chip per global shortcut. Default chips
+   are neutral, a changed one is tinted, a recording one has an indigo dashed border. */
+.sc-hint { margin-left: auto; font-size: 11px; font-weight: 400; letter-spacing: 0; text-transform: none; }
+.sc-row { padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+.sc-line { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.sc-row .setting-error { margin: 4px 0 0; font-size: 11px; }
+.sc-chip {
+  flex: none; min-width: 64px; height: 24px; padding: 0 8px; border: 1px solid var(--border);
+  border-radius: 6px; background: var(--bg); color: var(--ink); font-size: 11px; font-weight: 500; cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.sc-chip:hover { border-color: var(--indigo); }
+.sc-chip.changed { border-color: var(--indigo-tint); background: var(--indigo-tint); color: var(--indigo); }
+.sc-chip.recording { border: 1px dashed var(--indigo); background: var(--surface); color: var(--indigo); }
+.sc-foot { display: flex; justify-content: flex-end; padding-top: 8px; }
+.sc-foot .link-btn { font-size: 11px; }
 
 /* First-run welcome: covers the popover like the settings sheet. */
 .welcome { position: absolute; inset: 0; z-index: 20; display: flex; flex-direction: column; background: var(--surface); }

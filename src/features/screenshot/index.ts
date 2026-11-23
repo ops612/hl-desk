@@ -6,25 +6,32 @@ import { listen } from "@tauri-apps/api/event";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
 import { icon } from "../../icons";
 import { mountPermission } from "./permission";
+import { comboParts, formatCombo } from "../../shortcuts/combo";
+import { watchShortcuts } from "../../shortcuts/current";
 import "./screenshot.css";
 
 type Shot = { id: number; path: string; createdAt: number; updatedAt: number };
 
 const KEEP_MS = 24 * 60 * 60 * 1000;
 const isMac = navigator.userAgent.includes("Mac");
-const DEFAULT_KEY = isMac ? "⌘⇧2" : "Ctrl+Shift+2";
 const DEVICE_KEY = isMac ? "⌘⇧4" : "Print Screen";
-/** The capture keys as shown on the tab (the device key is added when chosen in Settings). */
-let keys = `<kbd>${DEFAULT_KEY}</kbd>`;
+const DEVICE_PARTS = isMac ? ["⌘", "⇧", "4"] : ["Print Screen"];
+/** The capture shortcut (Settings > Shortcuts) as stored, e.g. "Ctrl+Shift+Digit2". */
+let captureCombo = "";
+/** The device key is chosen (Settings > Capture key). */
+let device = false;
 
-/** One key combination as keycaps: "Ctrl+Shift+2" as three caps, "⌘⇧2" as three. */
-function keycaps(combo: string): string {
-  const parts = isMac && !combo.includes(" ") ? [...combo] : combo.split("+");
-  return parts.map((k) => `<kbd class="keycap">${k}</kbd>`).join("");
-}
+const keycaps = (parts: string[]) => parts.map((k) => `<kbd class="keycap">${k}</kbd>`).join("");
 /** The capture card's keys: the configured one(s), as the old "or press" line had them. */
-const cardKeys = (device: boolean) =>
-  device ? `${keycaps(DEVICE_KEY)}<span class="shot-or">or</span>${keycaps(DEFAULT_KEY)}` : keycaps(DEFAULT_KEY);
+function cardKeys(): string {
+  const own = keycaps(comboParts(captureCombo, isMac));
+  return device ? `${keycaps(DEVICE_PARTS)}<span class="shot-or">or</span>${own}` : own;
+}
+/** The capture keys in the empty list's line. */
+function keys(): string {
+  const own = `<kbd>${formatCombo(captureCombo, isMac)}</kbd>`;
+  return device ? `<kbd>${DEVICE_KEY}</kbd> or ${own}` : own;
+}
 
 // Thumbnail object URLs, keyed by "id:updatedAt" so an edited capture reloads.
 const urls = new Map<string, string>();
@@ -37,7 +44,7 @@ export function mount(el: HTMLElement): void {
       <p class="hint shot-sub">Mark it up, translate it, drag it anywhere</p>
       <div class="shot-row">
         <button class="btn-primary shot-capture" type="button">Capture</button>
-        <span class="shot-keys" aria-label="Shortcut">${cardKeys(false)}</span>
+        <span class="shot-keys" aria-label="Shortcut"></span>
       </div>
     </div>
     <div class="shot-perm" role="alert" hidden></div>
@@ -83,19 +90,23 @@ export function mount(el: HTMLElement): void {
   const refresh = () => render(grid, label).catch(showError);
   void listen("screenshot-changed", refresh);
 
-  // The capture keys (Settings > Capture key).
+  // The capture keys (Settings > Shortcuts and Settings > Capture key).
   const keysEl = el.querySelector<HTMLElement>(".shot-keys")!;
+  const showKeys = () => {
+    keysEl.innerHTML = cardKeys();
+    void refresh();
+  };
   const loadKeys = () =>
     invoke<{ key: string }>("screenshot_capture_settings")
       .then((s) => {
-        keys =
-          s.key === "device"
-            ? `<kbd>${DEVICE_KEY}</kbd> or <kbd>${DEFAULT_KEY}</kbd>`
-            : `<kbd>${DEFAULT_KEY}</kbd>`;
-        keysEl.innerHTML = cardKeys(s.key === "device");
-        void refresh();
+        device = s.key === "device";
+        showKeys();
       })
       .catch(() => {});
+  watchShortcuts((c) => {
+    captureCombo = c.capture;
+    showKeys();
+  });
   void listen("screenshot-keys-changed", loadKeys);
   void loadKeys();
   setInterval(refresh, 60_000); // keeps "time left" current
@@ -106,7 +117,7 @@ async function render(grid: HTMLElement, label: HTMLElement): Promise<void> {
   const shots = await invoke<Shot[]>("screenshot_list");
   label.hidden = shots.length === 0;
   if (shots.length === 0) {
-    grid.innerHTML = `<p class="shot-empty">No screenshots yet.<br />Press ${keys} or Capture, then drag over what you want.</p>`;
+    grid.innerHTML = `<p class="shot-empty">No screenshots yet.<br />Press ${keys()} or Capture, then drag over what you want.</p>`;
   } else {
     const cards = await Promise.all(shots.map(card));
     grid.replaceChildren(...cards);
