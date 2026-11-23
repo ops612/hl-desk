@@ -6,6 +6,7 @@ mod ocr;
 mod screenshot;
 mod settings;
 mod translate;
+mod translator;
 mod voice;
 
 use std::{
@@ -199,6 +200,7 @@ pub fn run() {
     let ocr_commands = ocr::commands();
     let settings_commands = settings::commands();
     let translate_commands = translate::commands();
+    let translator_commands = translator::commands();
     let voice_commands = voice::commands();
     let app_commands = applog::commands();
     let shell_commands = shell_handlers();
@@ -256,6 +258,8 @@ pub fn run() {
                 settings_commands(invoke)
             } else if command.starts_with("translate_") {
                 translate_commands(invoke)
+            } else if command.starts_with("translator_") {
+                translator_commands(invoke)
             } else if command.starts_with("voice_") {
                 voice_commands(invoke)
             } else if command.starts_with("shell_") {
@@ -323,6 +327,7 @@ pub fn run() {
             screenshot::init(handle);
             notes::init(handle);
             translate::init(handle);
+            translator::init(handle);
 
             // First run: open at login is turned on and the window opens with the welcome card.
             // Started at login (--hidden): tray icon only. Started by hand: show the window.

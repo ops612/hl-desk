@@ -206,8 +206,10 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-          # Bump with the GGML_* flags above.
-          key: ggml-avx-f16c1
+          # Bump with the GGML_* flags above. The runner image is in the key because the cached
+          # whisper-rs-sys CMake build keeps the old image's MSVC paths: on a new image (14.52 next
+          # to 14.51, 2026-11-20) it failed with "cl.exe is not a full path to an existing compiler".
+          key: ggml-avx-f16c1-${{ env.ImageVersion }}
 
       - run: npm ci
 

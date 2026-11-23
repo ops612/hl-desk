@@ -81,6 +81,7 @@ pinBtn.addEventListener("click", () => setPinned(pinBtn.getAttribute("aria-press
 const shortcuts: [string, string][] = [
   ["Open or close HL Desk", `${mod}${isMac ? "⇧" : "Shift+"}Space`],
   ["Clipboard, Screenshot, Notes", `${mod}1, ${mod}2, ${mod}3`],
+  ["Open the Translate window", `${mod}${isMac ? "⇧" : "Shift+"}1`],
   ["Capture an area", `${mod}${isMac ? "⇧" : "Shift+"}2`],
   ["Editor: number, pen, crop, undo", `N, P, C, ${mod}Z`],
   ["Pin a clipboard item", `${mod}P`],
@@ -162,6 +163,7 @@ const ICON_MIC = svg('<path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3
 const copyTwice = [cmdKey, "C", "C"];
 const captureKeys = [cmdKey, shiftKey, "2"];
 const dictateKeys = [cmdKey, shiftKey, "D"];
+const translatorKeys = [cmdKey, shiftKey, "1"];
 // [title, hint, keys, icon, new?]
 type GuideRow = [string, string, string[], string, boolean?];
 const welcomeItems: GuideRow[] = [
@@ -172,11 +174,15 @@ const welcomeItems: GuideRow[] = [
   ["Clipboard keeps 1 day", "Copy as usual, then search it here",
     [cmdKey, "C"], svg('<path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/>')],
   ["Translate", "Select text, copy twice. Screenshots: Translate button", copyTwice, ICON_TRANSLATE],
+  ["Translate window", "Type or paste, then copy the English", translatorKeys, ICON_TRANSLATE],
   ["Voice to text", "Click the mic in a note and speak", dictateKeys, ICON_MIC],
 ];
 // "New in HL Desk" (What's new on the Updated line): rows per version. A later release adds an
 // entry; a version without one shows the newest entry.
 const whatsNew: Record<string, GuideRow[]> = {
+  "0.1.11": [
+    ["Translate window", "Type or paste, then copy the English", translatorKeys, ICON_TRANSLATE, true],
+  ],
   "0.1.10": [
     ["Screenshots copy at once", "Capture, then paste. Mark up from the notice", captureKeys, ICON_IMAGE, true],
   ],
@@ -252,6 +258,10 @@ welcomeDone.addEventListener("click", () => {
 });
 document.getElementById("welcome-release-notes")!.addEventListener("click", () => {
   if (whatsNewVersion) openReleaseNotes(whatsNewVersion);
+});
+// Translate window (src-tauri/src/translator.rs): the header button, as Ctrl+Shift+1 / Cmd+Shift+1.
+document.getElementById("translator-open")!.addEventListener("click", () => {
+  invoke("translator_open").catch(() => {});
 });
 // Guide: the full welcome list, any time. Opening it does not change welcomeSeen.
 document.getElementById("guide-open")!.addEventListener("click", showWelcome);
