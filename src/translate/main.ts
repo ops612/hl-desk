@@ -3,7 +3,7 @@
 // (translate_card_take), draws, reports its height (translate_card_show: Rust places it near the
 // pointer and shows it) and translates with the shared engine (./engine.ts).
 // Models are downloaded on first use of a pair, after the user clicks Download (about 50-70 MB).
-// Under the offline result, an AI result (online, ./ai.ts) when built with the company gateway
+// Under the picker + offline Copy row, an AI result (online, ./ai.ts) when built with the company gateway
 // and on in Settings.
 import "@fontsource/ibm-plex-sans/400.css";
 import "@fontsource/ibm-plex-sans/500.css";
