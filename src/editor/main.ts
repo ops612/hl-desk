@@ -13,6 +13,8 @@ import "../styles.css";
 import "../translate/translate.css";
 import "./editor.css";
 import { setupTranslatePanel } from "./translate-panel";
+import { setupCopyText } from "./copy-text-button";
+import { penCursor } from "./copy-text";
 
 type Tool = "number" | "pen" | "crop";
 type Rect = { x: number; y: number; w: number; h: number };
@@ -47,6 +49,9 @@ const ops: Op[] = [];
 const redoOps: Op[] = [];
 let version = 0; // bumps on every change; compared with savedVersion to skip needless saves
 let savedVersion = 0;
+// Where the file on disk starts in the image's pixels: a save writes the cropped canvas, so OCR
+// boxes of the file are shifted by the crop's corner (see crop-text.ts).
+let savedOrigin = { x: 0, y: 0 };
 let selection: Rect | null = null; // crop rectangle, adjustable with its handles until applied
 let picked: number | null = null; // id of the selected marker or pen stroke
 let nextId = 1;
@@ -58,7 +63,7 @@ const penWidth = 3 * unit;
 
 const mod = isMac ? "⌘" : "Ctrl+";
 document.getElementById("keys")!.textContent =
-  `N number · P pen · C crop · click a mark, then Delete · ${mod}Z undo · ${isMac ? "⌘⇧Z" : "Ctrl+Shift+Z"} redo · Esc close`;
+  `N number · P pen · C crop · T copy text · click a mark, then Delete · ${mod}Z undo · ${isMac ? "⌘⇧Z" : "Ctrl+Shift+Z"} redo · Esc close`;
 undoBtn.title = `Undo (${mod}Z)`;
 redoBtn.title = `Redo (${isMac ? "⌘⇧Z" : "Ctrl+Shift+Z"})`;
 
@@ -224,6 +229,12 @@ function fit(): void {
   const scale = Math.min(room.w / canvas.width, room.h / canvas.height, 1 / unit);
   canvas.style.width = `${canvas.width * scale}px`;
   canvas.style.height = `${canvas.height * scale}px`;
+  updatePenCursor();
+}
+
+/** Pen cursor: a dot the size of the stroke on screen in the chosen colour (editor.css fallback: crosshair). */
+function updatePenCursor(): void {
+  stage.style.setProperty("--pen-cursor", penCursor(color, penWidth / cssToImage()));
 }
 
 function normalize(r: Rect): Rect {
@@ -338,6 +349,7 @@ function setTool(next: Tool): void {
 
 function setColor(next: string): void {
   color = next;
+  updatePenCursor();
   for (const b of document.querySelectorAll<HTMLButtonElement>("[data-color]")) {
     b.setAttribute("role", "radio");
     b.setAttribute("aria-checked", String(b.dataset.color === next));
@@ -514,6 +526,7 @@ async function save(): Promise<void> {
 
 async function writePng(): Promise<void> {
   const at = version;
+  const { crop } = replay();
   render(false);
   const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
   render();
@@ -522,6 +535,7 @@ async function writePng(): Promise<void> {
     headers: { "x-shot-id": String(id) },
   });
   savedVersion = at;
+  savedOrigin = { x: crop.x, y: crop.y };
 }
 
 async function copy(): Promise<void> {
@@ -626,17 +640,28 @@ document.addEventListener("keydown", (e) => {
     if (key === "n") setTool("number");
     else if (key === "p") setTool("pen");
     else if (key === "c") setTool("crop");
+    else if (key === "t") copyText();
   }
 });
 window.addEventListener("resize", () => {
   fit();
   render();
 });
+// Copy text and Translate read only the text inside the applied crop.
+const textRegion = () => ({ crop: replay().crop, origin: savedOrigin });
 // Translate button and panel: the stage gets narrower or wider, so the canvas refits.
-setupTranslatePanel(id, () => {
+setupTranslatePanel(id, textRegion, () => {
   fit();
   render();
 });
+const copyText = setupCopyText(id, textRegion);
+// The toolbar can wrap to a second row (a narrow window, or the Copy text label growing for a
+// moment), which makes the stage shorter: refit the canvas then too.
+new ResizeObserver(() => {
+  if (!image.naturalWidth) return; // not loaded yet: load() fits
+  fit();
+  render();
+}).observe(stage);
 
 // The red close button saves too, so markup is never lost. Tauri waits for this handler,
 // then closes the window (needs core:window:allow-destroy in capabilities/editor.json).

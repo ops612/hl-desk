@@ -180,6 +180,9 @@ const welcomeItems: GuideRow[] = [
 // "New in HL Desk" (What's new on the Updated line): rows per version. A later release adds an
 // entry; a version without one shows the newest entry.
 const whatsNew: Record<string, GuideRow[]> = {
+  "0.1.12": [
+    ["Copy text from a screenshot", "Capture, then click Copy text", captureKeys, ICON_IMAGE, true],
+  ],
   "0.1.11": [
     ["Translate window", "Type or paste, then copy the English", translatorKeys, ICON_TRANSLATE, true],
   ],

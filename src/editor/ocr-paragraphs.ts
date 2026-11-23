@@ -4,12 +4,17 @@
 // previous one ends a sentence, when the vertical gap is large, when it starts further left than
 // the paragraph, or when it starts with a bullet or a number.
 
-export interface OcrLine {
+export interface OcrWord {
   text: string;
   x: number;
   y: number;
   w: number;
   h: number;
+}
+
+export interface OcrLine extends OcrWord {
+  /** Each word's box (ocr.rs); missing when the recognizer gave none. */
+  words?: OcrWord[];
 }
 
 const ENDS_SENTENCE = /[.!?:;。！？：；」』）)]["'”’]?$/;

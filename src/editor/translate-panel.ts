@@ -23,6 +23,7 @@ import {
   touchIdle,
   translateTexts,
 } from "../translate/engine";
+import { linesInCrop, type TextRegion } from "./crop-text";
 import { paragraphs, type OcrLine } from "./ocr-paragraphs";
 
 interface OcrText {
@@ -31,7 +32,7 @@ interface OcrText {
 }
 
 /** Wires the panel. `onLayout` runs after it opens or closes (the canvas refits). */
-export function setupTranslatePanel(captureId: number, onLayout: () => void): void {
+export function setupTranslatePanel(captureId: number, region: () => TextRegion, onLayout: () => void): void {
   const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
   const button = $<HTMLButtonElement>("translate");
   const panel = $("tr-panel");
@@ -51,7 +52,8 @@ export function setupTranslatePanel(captureId: number, onLayout: () => void): vo
   const linesEl = $("tr-lines");
   const copyBtn = $<HTMLButtonElement>("tr-copy");
 
-  let lines: string[] | null = null; // OCR result, read once per editor
+  let ocr: { lines: OcrLine[]; origin: TextRegion["origin"] } | null = null; // read once per editor
+  let lines: string[] | null = null; // paragraphs inside the crop, from `ocr`
   let translations: string[] = [];
   let pair: PairId | null = null;
   let script: Script = "han";
@@ -106,10 +108,11 @@ export function setupTranslatePanel(captureId: number, onLayout: () => void): vo
     reset();
     setState("Reading text…");
     try {
+      const { origin } = region();
       const out = await invoke<OcrText>("ocr_capture", { id: captureId });
       if (mine !== token) return;
-      lines = paragraphs(out.lines);
-      log("info", `editor: OCR found ${out.lines.length} lines, ${lines.length} paragraphs (${out.language})`);
+      ocr = { lines: out.lines, origin };
+      log("info", `editor: OCR found ${out.lines.length} lines (${out.language})`);
     } catch (e) {
       if (mine !== token) return;
       // The error is a sentence for the user; one kind starts with "ocr-no-chinese:".
@@ -119,6 +122,20 @@ export function setupTranslatePanel(captureId: number, onLayout: () => void): vo
       showError(text);
       return;
     }
+    await show();
+  }
+
+  /** The paragraphs inside the current crop. */
+  function cropped(): string[] {
+    return ocr ? paragraphs(linesInCrop(ocr.lines, region().crop, ocr.origin)) : [];
+  }
+
+  /** Shows the text inside the crop and translates it. */
+  async function show(): Promise<void> {
+    const mine = ++token;
+    reset();
+    lines = cropped();
+    log("info", `editor: ${lines.length} paragraphs inside the crop`);
     if (!lines.length) {
       setState("No text found in this screenshot.");
       return;
@@ -222,7 +239,9 @@ export function setupTranslatePanel(captureId: number, onLayout: () => void): vo
     done.classList.replace("primary", "plain");
     onLayout();
     log("info", "editor: translate panel opened");
-    if (lines === null) void read();
+    if (ocr === null) void read();
+    // Cropped since the last read: show only what is inside the new crop.
+    else if (cropped().join("\n") !== lines?.join("\n")) void show();
   }
 
   function close(): void {
