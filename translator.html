@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HL Desk Translate</title>
+  </head>
+  <body class="tw-page">
+    <header class="app-header" data-tauri-drag-region>
+      <span class="wordmark" data-tauri-drag-region>
+        <!-- The tray icon's mark, as in the main window header. -->
+        <svg class="wordmark-logo" width="16" height="16" viewBox="0 0 16 16" role="img" aria-label="HL">
+          <rect width="16" height="16" rx="3.5" fill="#2F4CC8" />
+          <path d="M2 4h2v3h2V4h2v8H6V9H4v3H2zM10 4h2v6h2v2h-4z" fill="#fff" />
+        </svg>TRANSLATE</span>
+      <span class="header-actions">
+        <button class="icon-btn pin-btn" id="pin" type="button" aria-label="Keep on top" title="Keep on top"
+          aria-pressed="true">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M6 2h4l-.5 4 2.5 2.5V10H8.6v4h-1.2v-4H4V8.5L6.5 6z" fill="none" stroke="currentColor"
+              stroke-width="1.2" stroke-linejoin="round" />
+          </svg>
+        </button>
+        <button class="icon-btn" id="close" type="button" aria-label="Close" title="Close">
+          <svg width="12" height="12" viewBox="0 0 14 14" aria-hidden="true" fill="none" stroke="currentColor"
+            stroke-width="1.5" stroke-linecap="round"><path d="M3 3l8 8M11 3l-8 8" /></svg>
+        </button>
+      </span>
+    </header>
+
+    <div class="tw-body">
+      <div class="tw-input">
+        <textarea class="field" id="text" aria-label="Text to translate" placeholder="Type or paste text"
+          spellcheck="false"></textarea>
+        <span class="tw-chip" id="detected" hidden></span>
+      </div>
+
+      <div class="tw-langs">
+        <select class="select" id="source" aria-label="From"></select>
+        <button class="icon-btn" id="swap" type="button" aria-label="Swap languages" title="Swap languages">
+          <!-- Repeat icon from Feather (MIT), turned to arrows both ways. -->
+          <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor"
+            stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M17 3l4 4-4 4" /><path d="M3 7h18" /><path d="M7 21l-4-4 4-4" /><path d="M21 17H3" />
+          </svg>
+        </button>
+        <select class="select" id="target" aria-label="To"></select>
+      </div>
+
+      <section class="tw-result" aria-labelledby="result-label">
+        <div class="tw-result-head">
+          <span class="tw-result-label" id="result-label">Offline</span>
+          <span class="tw-result-actions">
+            <button class="icon-btn" id="speak" type="button" aria-label="Read aloud" title="Read aloud" hidden>
+              <!-- Volume-2 icon from Feather (MIT). -->
+              <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor"
+                stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M11 5L6 9H2v6h4l5 4V5z" /><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07" />
+              </svg>
+            </button>
+            <button class="btn-primary" id="primary" type="button" disabled>Copy</button>
+          </span>
+        </div>
+        <p class="tw-out" id="result" aria-live="polite"></p>
+        <!-- First use of a pair: the same download block and wording as the translate card. -->
+        <div class="tr-get" id="get" hidden>
+          <h2 class="tr-get-title" id="get-title"></h2>
+          <p class="tr-get-text" id="get-text"></p>
+          <div class="tr-progress" id="progress" hidden><div class="tr-progress-bar" id="progress-bar"></div></div>
+          <p class="tr-get-status hint" id="get-status" hidden></p>
+        </div>
+        <p class="tr-error" id="error" role="alert" hidden></p>
+      </section>
+    </div>
+
+    <footer class="footer tw-footer" id="hint">Ctrl+Shift+1 open · Ctrl+Enter copy result · Esc close</footer>
+    <script type="module" src="/src/translator/main.ts"></script>
+  </body>
+</html>

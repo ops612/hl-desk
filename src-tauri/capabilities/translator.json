@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "translator",
+  "description": "The Translate window (label translator, created in translator.rs). core:default lets it listen for translator://open and receive download progress on a channel; hide (Esc, close), set-always-on-top (pin) and start-dragging (header) are its window calls. Its translate_* and app_log commands are app commands, not ACL-checked while the app defines no app manifest (build.rs).",
+  "windows": ["translator"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-hide",
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-start-dragging"
+  ]
+}

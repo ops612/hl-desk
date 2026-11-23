@@ -1,0 +1,42 @@
+/* Translate window (translator.html). Tokens, font and shared classes (.app-header, .wordmark,
+   .icon-btn, .pin-btn, .btn-primary, .field, .select, .footer, .hint) come from src/styles.css; the
+   download block and error (.tr-get, .tr-progress, .tr-error) from src/translate/translate.css.
+   Top to bottom: header, text box, language row, result panel, footer hint. The text box and the
+   result share the height left over. The page draws its own 1px border (no system frame). */
+body.tw-page { border: 1px solid var(--border); }
+.tw-body { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; padding: 4px var(--inset) var(--inset); }
+
+.tw-input { position: relative; flex: 1 1 0; min-height: 72px; display: flex; }
+.tw-input textarea {
+  flex: 1; min-height: 0; padding-bottom: 26px; font-size: 14px; line-height: 20px; overflow-y: auto;
+  border-radius: var(--radius);
+}
+/* "Detected 繁中": bottom right inside the text box, only while the source is Auto. */
+.tw-chip {
+  position: absolute; right: 8px; bottom: 6px; padding: 1px 8px; border-radius: 9px;
+  background: var(--bg); color: var(--muted); font-size: 11px; line-height: 16px; pointer-events: none;
+  animation: fade-in var(--dur) var(--ease);
+}
+
+.tw-langs { display: flex; flex: none; align-items: center; gap: 6px; }
+.tw-langs .select { flex: 1; min-width: 0; height: 28px; font-size: 12px; }
+
+.tw-result {
+  flex: 1 1 0; min-height: 96px; display: flex; flex-direction: column; gap: 6px; padding: 8px 10px 10px;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg);
+}
+.tw-result-head { display: flex; flex: none; align-items: center; justify-content: space-between; gap: 8px; }
+.tw-result-label { font-size: 11px; font-weight: 500; letter-spacing: 1px; color: var(--muted); text-transform: uppercase; }
+.tw-result-actions { display: flex; align-items: center; gap: 4px; }
+.tw-result-actions .btn-primary { height: 26px; padding: 0 12px; border-radius: var(--radius-sm); font-size: 12px; }
+.tw-out {
+  flex: 1; min-height: 0; margin: 0; overflow-y: auto; font-size: 14px; line-height: 20px;
+  white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; cursor: text;
+  transition: color var(--dur-fast) var(--ease);
+}
+.tw-out.pending { color: var(--muted); }
+.tw-out:empty { display: none; }
+.tw-result .tr-get { background: var(--indigo-tint); }
+.tw-result .tr-progress { background: var(--surface); }
+
+.tw-footer { justify-content: center; }
