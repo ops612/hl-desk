@@ -49,6 +49,9 @@ const ops: Op[] = [];
 const redoOps: Op[] = [];
 let version = 0; // bumps on every change; compared with savedVersion to skip needless saves
 let savedVersion = 0;
+// Where the file on disk starts in the image's pixels: a save writes the cropped canvas, so OCR
+// boxes of the file are shifted by the crop's corner (see crop-text.ts).
+let savedOrigin = { x: 0, y: 0 };
 let selection: Rect | null = null; // crop rectangle, adjustable with its handles until applied
 let picked: number | null = null; // id of the selected marker or pen stroke
 let nextId = 1;
@@ -523,6 +526,7 @@ async function save(): Promise<void> {
 
 async function writePng(): Promise<void> {
   const at = version;
+  const { crop } = replay();
   render(false);
   const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
   render();
@@ -531,6 +535,7 @@ async function writePng(): Promise<void> {
     headers: { "x-shot-id": String(id) },
   });
   savedVersion = at;
+  savedOrigin = { x: crop.x, y: crop.y };
 }
 
 async function copy(): Promise<void> {
@@ -642,12 +647,14 @@ window.addEventListener("resize", () => {
   fit();
   render();
 });
+// Copy text and Translate read only the text inside the applied crop.
+const textRegion = () => ({ crop: replay().crop, origin: savedOrigin });
 // Translate button and panel: the stage gets narrower or wider, so the canvas refits.
-setupTranslatePanel(id, () => {
+setupTranslatePanel(id, textRegion, () => {
   fit();
   render();
 });
-const copyText = setupCopyText(id);
+const copyText = setupCopyText(id, textRegion);
 // The toolbar can wrap to a second row (a narrow window, or the Copy text label growing for a
 // moment), which makes the stage shorter: refit the canvas then too.
 new ResizeObserver(() => {

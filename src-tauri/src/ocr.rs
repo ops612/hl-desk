@@ -6,8 +6,9 @@
 //!
 //! One command, `ocr_capture(id)` (routed by its "ocr_" prefix in lib.rs). It reads the capture's
 //! PNG as saved by the screenshot feature and returns the lines in image pixel coordinates
-//! (top-left origin), in reading order. Errors are sentences the UI can show; the one error the
-//! UI may want to recognise starts with `ocr-no-chinese:` (see ERR_NO_CHINESE).
+//! (top-left origin), in reading order, each with its words' boxes in the same pixels (the
+//! editor keeps only the words inside a crop). Errors are sentences the UI can show; the one
+//! error the UI may want to recognise starts with `ocr-no-chinese:` (see ERR_NO_CHINESE).
 
 use std::time::Instant;
 
@@ -23,6 +24,20 @@ pub(crate) const ERR_NO_CHINESE: &str = "ocr-no-chinese";
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub(crate) struct OcrLine {
+    pub text: String,
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+    /// The line's words with their own boxes, in reading order (a Chinese character is one
+    /// word). Left out when the recognizer gave none; the editor then uses the line's box.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub words: Vec<OcrWord>,
+}
+
+/// One word of a line, in the same image pixels as the line.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub(crate) struct OcrWord {
     pub text: String,
     pub x: f64,
     pub y: f64,
@@ -187,6 +202,39 @@ fn is_cjk(c: char) -> bool {
         | 0x20000..=0x2FFFF)
 }
 
+/// Splits a Vision line into words for their boxes: each Chinese character is a word, other
+/// text splits at whitespace. Returns each word with its start and length in UTF-16 units
+/// (NSRange counts those).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn word_ranges(text: &str) -> Vec<(String, usize, usize)> {
+    let mut out: Vec<(String, usize, usize)> = Vec::new();
+    let mut word = String::new();
+    let mut start = 0;
+    let mut at = 0;
+    fn flush(word: &mut String, start: usize, out: &mut Vec<(String, usize, usize)>) {
+        if !word.is_empty() {
+            let len = word.encode_utf16().count();
+            out.push((std::mem::take(word), start, len));
+        }
+    }
+    for c in text.chars() {
+        if c.is_whitespace() || is_cjk(c) {
+            flush(&mut word, start, &mut out);
+            if !c.is_whitespace() {
+                out.push((c.to_string(), at, c.len_utf16()));
+            }
+        } else if word.is_empty() {
+            start = at;
+            word.push(c);
+        } else {
+            word.push(c);
+        }
+        at += c.len_utf16();
+    }
+    flush(&mut word, start, &mut out);
+    out
+}
+
 /// Joins OCR words into a line: a space between words, except next to a Chinese character
 /// (Windows OCR returns each Chinese character as its own word).
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -265,7 +313,7 @@ mod platform {
 
     use super::{
         choose_language, is_chinese, join_words, may_hold_unread_chinese, no_chinese_error,
-        reading_order, OcrLine, OcrText,
+        reading_order, OcrLine, OcrText, OcrWord,
     };
     use crate::applog;
 
@@ -353,6 +401,7 @@ mod platform {
             let line = ocr_lines.GetAt(i).map_err(err)?;
             let words = line.Words().map_err(err)?;
             let mut texts = Vec::new();
+            let mut boxes = Vec::new();
             let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
             for j in 0..words.Size().map_err(err)? {
                 let word = words.GetAt(j).map_err(err)?;
@@ -361,7 +410,15 @@ mod platform {
                 y0 = y0.min(r.Y as f64);
                 x1 = x1.max((r.X + r.Width) as f64);
                 y1 = y1.max((r.Y + r.Height) as f64);
-                texts.push(word.Text().map_err(err)?.to_string());
+                let text = word.Text().map_err(err)?.to_string();
+                boxes.push(OcrWord {
+                    text: text.clone(),
+                    x: r.X as f64 / scale,
+                    y: r.Y as f64 / scale,
+                    w: r.Width as f64 / scale,
+                    h: r.Height as f64 / scale,
+                });
+                texts.push(text);
             }
             if texts.is_empty() {
                 continue;
@@ -372,6 +429,7 @@ mod platform {
                 y: y0 / scale,
                 w: (x1 - x0) / scale,
                 h: (y1 - y0) / scale,
+                words: boxes,
             });
         }
         let lines = reading_order(lines);
@@ -388,12 +446,15 @@ mod platform {
 #[cfg(target_os = "macos")]
 mod platform {
     use objc2::{rc::autoreleasepool, AllocAnyThread};
-    use objc2_foundation::{NSArray, NSData, NSDictionary, NSString};
+    use objc2_foundation::{NSArray, NSData, NSDictionary, NSRange, NSString};
     use objc2_vision::{
         VNImageRequestHandler, VNRecognizeTextRequest, VNRequest, VNRequestTextRecognitionLevel,
     };
 
-    use super::{normalized_to_pixels, reading_order, vision_languages, OcrLine, OcrText};
+    use super::{
+        normalized_to_pixels, reading_order, vision_languages, word_ranges, OcrLine, OcrText,
+        OcrWord,
+    };
     use crate::applog;
 
     pub fn recognize(path: &str) -> Result<OcrText, String> {
@@ -463,7 +524,25 @@ mod platform {
                     width,
                     height,
                 );
-                lines.push(OcrLine { text, x, y, w, h });
+                // Each word's own box, for the editor's crop; a word Vision cannot place is
+                // left out of the list (all of them failing leaves the line's box alone).
+                let mut words = Vec::new();
+                for (word, start, len) in word_ranges(&text) {
+                    let Ok(r) = best.boundingBoxForRange_error(NSRange::new(start, len)) else {
+                        continue;
+                    };
+                    let b = r.boundingBox();
+                    let (wx, wy, ww, wh) = normalized_to_pixels(
+                        b.origin.x as f64,
+                        b.origin.y as f64,
+                        b.size.width as f64,
+                        b.size.height as f64,
+                        width,
+                        height,
+                    );
+                    words.push(OcrWord { text: word, x: wx, y: wy, w: ww, h: wh });
+                }
+                lines.push(OcrLine { text, x, y, w, h, words });
             }
         }
         Ok(OcrText {
@@ -487,7 +566,33 @@ mod tests {
     use super::*;
 
     fn line(text: &str, x: f64, y: f64, w: f64, h: f64) -> OcrLine {
-        OcrLine { text: text.into(), x, y, w, h }
+        OcrLine { text: text.into(), x, y, w, h, words: Vec::new() }
+    }
+
+    #[test]
+    fn splits_vision_lines_into_word_ranges() {
+        let words = word_ranges("Copy  text 你好 ok");
+        assert_eq!(
+            words,
+            vec![
+                ("Copy".to_string(), 0, 4),
+                ("text".to_string(), 6, 4),
+                ("你".to_string(), 11, 1),
+                ("好".to_string(), 12, 1),
+                ("ok".to_string(), 14, 2),
+            ]
+        );
+        // Chinese next to Latin with no space, and a character outside the BMP (2 UTF-16 units).
+        assert_eq!(
+            word_ranges("價格HK$5 😀x"),
+            vec![
+                ("價".to_string(), 0, 1),
+                ("格".to_string(), 1, 1),
+                ("HK$5".to_string(), 2, 4),
+                ("😀x".to_string(), 7, 3),
+            ]
+        );
+        assert!(word_ranges("   ").is_empty());
     }
 
     fn tags(list: &[&str]) -> Vec<String> {

@@ -1,17 +1,18 @@
 // Screenshot editor: the Copy text button. Reads the capture's text with the same OCR as the
-// Translate panel (ocr_capture, src-tauri/src/ocr.rs), joins wrapped lines into paragraphs and
+// Translate panel (ocr_capture, src-tauri/src/ocr.rs), keeps the words inside the crop, joins wrapped lines into paragraphs and
 // copies them as plain text, one paragraph per line. The copy goes through translate_copy, which
 // marks it as our own write so the double-copy translate card does not open for it.
 import { invoke } from "@tauri-apps/api/core";
 import { copyTranslation, describe, log } from "../translate/engine";
 import { ONLY_ENGLISH, copiedLabel, countLines, isNoChineseError, joinParagraphs } from "./copy-text";
+import { linesInCrop, type TextRegion } from "./crop-text";
 import { paragraphs, type OcrLine } from "./ocr-paragraphs";
 
 const LABEL = "Copy text";
 const SHOW_MS = 2000;
 
 /** Wires the button; returns the action, also used by the T key. */
-export function setupCopyText(captureId: number): () => void {
+export function setupCopyText(captureId: number, region: () => TextRegion): () => void {
   const button = document.getElementById("copy-text") as HTMLButtonElement;
   const label = document.getElementById("copy-text-label")!;
   const icon = document.getElementById("copy-text-icon")!;
@@ -35,9 +36,10 @@ export function setupCopyText(captureId: number): () => void {
     let ok = false;
     let read = false;
     try {
+      const { origin } = region(); // the file as it is now; a save during OCR is not expected
       const out = await invoke<{ lines: OcrLine[]; language: string }>("ocr_capture", { id: captureId });
       read = true;
-      const text = joinParagraphs(paragraphs(out.lines));
+      const text = joinParagraphs(paragraphs(linesInCrop(out.lines, region().crop, origin)));
       const n = countLines(text);
       if (n) {
         await copyTranslation(text);
