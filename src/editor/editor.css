@@ -33,7 +33,9 @@ button { cursor: pointer; }
 }
 canvas { display: block; box-shadow: 0 1px 4px rgb(11 18 32 / 15%); }
 .stage[data-tool="number"] canvas { cursor: copy; }
-.stage[data-tool="pen"] canvas, .stage[data-tool="crop"] canvas { cursor: crosshair; }
+/* Pen: a dot in the chosen colour (--pen-cursor, set in main.ts), crosshair if unset. */
+.stage[data-tool="pen"] canvas { cursor: var(--pen-cursor, crosshair); }
+.stage[data-tool="crop"] canvas { cursor: crosshair; }
 /* "Delete to remove" above the selected marker or stroke. */
 .pick-tag {
   position: absolute; transform: translate(-50%, -100%); padding: 2px 8px; border-radius: var(--radius-sm);
@@ -70,6 +72,8 @@ canvas { display: block; box-shadow: 0 1px 4px rgb(11 18 32 / 15%); }
 /* Translate button and panel (src/editor/translate-panel.ts; shared .tr-* classes from
    src/translate/translate.css). The button is a .tool, selected while the panel is open. */
 .tr-tool { display: inline-flex; align-items: center; gap: 6px; }
+.tool:disabled { color: var(--muted); cursor: default; }
+.tool:disabled:hover { background: var(--surface); }
 .tr-panel {
   flex: none; width: 250px; display: flex; flex-direction: column; min-height: 0;
   border-left: 1px solid var(--border); background: var(--surface);

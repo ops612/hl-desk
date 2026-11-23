@@ -13,6 +13,8 @@ import "../styles.css";
 import "../translate/translate.css";
 import "./editor.css";
 import { setupTranslatePanel } from "./translate-panel";
+import { setupCopyText } from "./copy-text-button";
+import { penCursor } from "./copy-text";
 
 type Tool = "number" | "pen" | "crop";
 type Rect = { x: number; y: number; w: number; h: number };
@@ -58,7 +60,7 @@ const penWidth = 3 * unit;
 
 const mod = isMac ? "⌘" : "Ctrl+";
 document.getElementById("keys")!.textContent =
-  `N number · P pen · C crop · click a mark, then Delete · ${mod}Z undo · ${isMac ? "⌘⇧Z" : "Ctrl+Shift+Z"} redo · Esc close`;
+  `N number · P pen · C crop · T copy text · click a mark, then Delete · ${mod}Z undo · ${isMac ? "⌘⇧Z" : "Ctrl+Shift+Z"} redo · Esc close`;
 undoBtn.title = `Undo (${mod}Z)`;
 redoBtn.title = `Redo (${isMac ? "⌘⇧Z" : "Ctrl+Shift+Z"})`;
 
@@ -224,6 +226,12 @@ function fit(): void {
   const scale = Math.min(room.w / canvas.width, room.h / canvas.height, 1 / unit);
   canvas.style.width = `${canvas.width * scale}px`;
   canvas.style.height = `${canvas.height * scale}px`;
+  updatePenCursor();
+}
+
+/** Pen cursor: a dot the size of the stroke on screen in the chosen colour (editor.css fallback: crosshair). */
+function updatePenCursor(): void {
+  stage.style.setProperty("--pen-cursor", penCursor(color, penWidth / cssToImage()));
 }
 
 function normalize(r: Rect): Rect {
@@ -338,6 +346,7 @@ function setTool(next: Tool): void {
 
 function setColor(next: string): void {
   color = next;
+  updatePenCursor();
   for (const b of document.querySelectorAll<HTMLButtonElement>("[data-color]")) {
     b.setAttribute("role", "radio");
     b.setAttribute("aria-checked", String(b.dataset.color === next));
@@ -626,6 +635,7 @@ document.addEventListener("keydown", (e) => {
     if (key === "n") setTool("number");
     else if (key === "p") setTool("pen");
     else if (key === "c") setTool("crop");
+    else if (key === "t") copyText();
   }
 });
 window.addEventListener("resize", () => {
@@ -637,6 +647,13 @@ setupTranslatePanel(id, () => {
   fit();
   render();
 });
+const copyText = setupCopyText(id);
+// The toolbar can wrap to a second row (a narrow window, or the Copy text label growing for a
+// moment), which makes the stage shorter: refit the canvas then too.
+new ResizeObserver(() => {
+  fit();
+  render();
+}).observe(stage);
 
 // The red close button saves too, so markup is never lost. Tauri waits for this handler,
 // then closes the window (needs core:window:allow-destroy in capabilities/editor.json).
