@@ -651,6 +651,7 @@ const copyText = setupCopyText(id);
 // The toolbar can wrap to a second row (a narrow window, or the Copy text label growing for a
 // moment), which makes the stage shorter: refit the canvas then too.
 new ResizeObserver(() => {
+  if (!image.naturalWidth) return; // not loaded yet: load() fits
   fit();
   render();
 }).observe(stage);
