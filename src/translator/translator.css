@@ -40,3 +40,6 @@ body.tw-page { border: 1px solid var(--border); }
 .tw-result .tr-progress { background: var(--surface); }
 
 .tw-footer { justify-content: center; }
+/* The AI panel (src/translate/translate.css) under the offline result takes the height it needs. */
+.tw-body .ai-panel { flex: none; }
+.tw-body .ai-out { max-height: 120px; }

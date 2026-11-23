@@ -1,7 +1,8 @@
 //! App settings shared by the shell (not by one feature): <app data>/settings.json holds
 //! "welcome seen", the screenshot capture settings (capture key, mark up after a device
 //! screenshot; changed through screenshot.rs commands) and the translate card's last language
-//! picks (translate.rs) and the offline voice to text switch (voice.rs, Windows). Open at login is kept by the OS itself (tauri-plugin-autostart: a LaunchAgent
+//! picks (translate.rs), the offline voice to text switch (voice.rs, Windows) and the AI translation
+//! switch (ai.rs). Open at login is kept by the OS itself (tauri-plugin-autostart: a LaunchAgent
 //! on macOS, the HKCU Run key on Windows), so it is always read from there, never stored here.
 //! Commands are named "settings_<name>" and routed here by lib.rs.
 
@@ -30,6 +31,9 @@ struct Stored {
     /// Offline voice to text (voice.rs, Windows): the Notes mic records and transcribes in the app
     /// instead of Windows Voice typing. Off by default.
     offline_voice: bool,
+    /// AI translation (online, ai.rs): a second result from the company Claude gateway under the
+    /// offline one. On by default.
+    ai_translate: bool,
 }
 
 impl Default for Stored {
@@ -40,6 +44,7 @@ impl Default for Stored {
             markup_after_shot: !cfg!(target_os = "macos"),
             translate_picks: BTreeMap::new(),
             offline_voice: false,
+            ai_translate: true,
         }
     }
 }
@@ -97,6 +102,9 @@ fn load(app: &AppHandle) -> Stored {
         }
         if let Some(v) = obj.get("offlineVoice").and_then(|v| v.as_bool()) {
             stored.offline_voice = v;
+        }
+        if let Some(v) = obj.get("aiTranslate").and_then(|v| v.as_bool()) {
+            stored.ai_translate = v;
         }
         applog::warn("settings: kept the values that could be read");
         return stored;
@@ -180,6 +188,15 @@ pub fn offline_voice(app: &AppHandle) -> bool {
 #[cfg_attr(not(windows), allow(dead_code))]
 pub fn set_offline_voice(app: &AppHandle, on: bool) -> Result<(), String> {
     update(app, |s| s.offline_voice = on)
+}
+
+/// AI translation on (the Settings switch); read by ai.rs.
+pub fn ai_translate(app: &AppHandle) -> bool {
+    load(app).ai_translate
+}
+
+pub fn set_ai_translate(app: &AppHandle, on: bool) -> Result<(), String> {
+    update(app, |s| s.ai_translate = on)
 }
 
 #[derive(Serialize)]
